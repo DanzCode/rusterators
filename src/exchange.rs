@@ -62,6 +62,10 @@ mod transfer {
         fn update<F: Fn(T) -> T>(&mut self, op: F) {
             self.0 = Some(op(self.0.take().unwrap()))
         }
+
+        fn unwrap(mut self) -> T {
+            self.0.unwrap()
+        }
     }
 
     impl<T> Deref for SelfUpdating<T> {
@@ -103,7 +107,7 @@ mod transfer {
     }
 
     mod tests {
-        use crate::exchange::transfer::ValueExchangeContainer;
+        use crate::exchange::transfer::{ValueExchangeContainer, SelfUpdating};
 
         #[test]
         fn exchange_container_prepare() {
@@ -129,6 +133,40 @@ mod transfer {
             assert_eq!(container.receive_content(),1);
             assert_eq!(container.has_content(),false);
         }
+
+        #[test]
+        fn self_updating_init() {
+            let mut self_updating=SelfUpdating::of(String::from("t"));
+            match self_updating.0 {
+                Some(v) => assert_eq!(v,"t"),
+                _ => panic!("invalid state")
+            }
+        }
+
+        #[test]
+        fn self_updating_unwrap() {
+            let mut self_updating=SelfUpdating::of(String::from("t"));
+            assert_eq!(self_updating.unwrap(),"t")
+        }
+
+        #[test]
+        fn self_updating_deref() {
+            let mut self_updating=SelfUpdating::of(String::from("t"));
+            assert_eq!(self_updating.len(),1);
+        }
+
+        #[test]
+        fn self_updating_deref_mut() {
+            let mut self_updating=SelfUpdating::of(String::from("test"));
+            assert_eq!(self_updating.remove(0),'t');
+        }
+        #[test]
+        fn self_updating_perform_update() {
+            let mut self_updating=SelfUpdating::of(String::from("test"));
+            self_updating.update(|s| s.repeat(2));
+            assert_eq!(self_updating.unwrap(),"testtest");
+        }
+
 
     }
 }
