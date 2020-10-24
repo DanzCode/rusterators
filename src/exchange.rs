@@ -5,7 +5,6 @@ mod transfer {
     use std::mem::take;
     use context::Transfer;
     use std::intrinsics::transmute;
-    use std::ops::{Deref, DerefMut};
     use crate::utils::SelfUpdating;
 
     pub enum ValueExchangeContainer<V> {
@@ -103,7 +102,7 @@ mod transfer {
     }
 
     mod tests {
-        use crate::exchange::transfer::{ValueExchangeContainer, SelfUpdating, ValueMoveTransfer, ReceivableValueTransfer, SuspendableValueTransfer};
+        use crate::exchange::transfer::{ValueExchangeContainer, ValueMoveTransfer, ReceivableValueTransfer, SuspendableValueTransfer};
         use context::stack::ProtectedFixedSizeStack;
         use context::{ContextFn, Transfer, Context};
 
@@ -139,15 +138,15 @@ mod transfer {
             assert_eq!(dup_container.receive_content(),1)
         }
 
-        static mut stack:Option<ProtectedFixedSizeStack> =None;
+        static mut STATIC_TEST_STACK:Option<ProtectedFixedSizeStack> =None;
 
         fn create_test_context(test_fn:ContextFn, start_data:usize) -> Transfer {
             unsafe {
-                stack = Some(ProtectedFixedSizeStack::default())
+                STATIC_TEST_STACK = Some(ProtectedFixedSizeStack::default())
             }
-           unsafe { Transfer::new(Context::new(stack.as_ref().unwrap(),test_fn),start_data) }
+           unsafe { Transfer::new(Context::new(STATIC_TEST_STACK.as_ref().unwrap(), test_fn), start_data) }
         }
-        extern "C" fn init_test(t:Transfer) -> ! {
+        extern "C" fn init_test(_:Transfer) -> ! {
             panic!("")
         }
         #[test]
@@ -159,7 +158,7 @@ mod transfer {
 
         #[test]
         fn value_transfer_receive() {
-            let mut test_container=ValueExchangeContainer::prepare_exchange(2);
+            let test_container=ValueExchangeContainer::prepare_exchange(2);
             let test_transfer =create_test_context(init_test,test_container.make_pointer());
             let value_transfer=ValueMoveTransfer::new(test_transfer);
 
@@ -168,9 +167,9 @@ mod transfer {
 
         #[test]
         fn value_transfer_send() {
-            extern "C" fn send_test(mut t:Transfer) -> ! {
+            extern "C" fn send_test(t:Transfer) -> ! {
                 assert_eq!(ValueExchangeContainer::<i32>::of_pointer(t.data).receive_content(),2);
-                unsafe {t=t.context.resume(0);}
+                unsafe {t.context.resume(0);}
                 panic!()
             }
             let test_transfer =create_test_context(send_test,0);
@@ -180,11 +179,11 @@ mod transfer {
 
         #[test]
         fn receive_suspendable_transfer_cycle(){
-            extern "C" fn send_test(mut t:Transfer) -> ! {
-                let mut receive_transfer = ReceivableValueTransfer::init(t);
-                let (mut suspend_transfer,rec)=receive_transfer.receive::<i32>();
+            extern "C" fn send_test(t:Transfer) -> ! {
+                let receive_transfer = ReceivableValueTransfer::init(t);
+                let (suspend_transfer,rec)=receive_transfer.receive::<i32>();
                 assert_eq!(rec,2);
-                receive_transfer=suspend_transfer.suspend(3);
+                suspend_transfer.suspend(3);
                 panic!()
             }
             let test_transfer =SuspendableValueTransfer::init(create_test_context(send_test,0));

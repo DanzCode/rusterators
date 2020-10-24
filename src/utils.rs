@@ -11,8 +11,8 @@ impl<T> SelfUpdating<T> {
         self.0 = Some(op(self.0.take().unwrap()))
     }
 
-    pub fn unwrap(mut self) -> T {
-        self.0?
+    pub fn unwrap(self) -> T {
+        self.0.unwrap()
     }
 }
 
@@ -20,13 +20,13 @@ impl<T> Deref for SelfUpdating<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref()?
+        self.0.as_ref().unwrap()
     }
 }
 
 impl<T> DerefMut for SelfUpdating<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut()?
+        self.0.as_mut().unwrap()
     }
 }
 
@@ -35,7 +35,7 @@ mod tests {
 
     #[test]
     fn self_updating_init() {
-        let mut self_updating=SelfUpdating::of(String::from("t"));
+        let self_updating=SelfUpdating::of(String::from("t"));
         match self_updating.0 {
             Some(v) => assert_eq!(v,"t"),
             _ => panic!("invalid state")
@@ -44,13 +44,13 @@ mod tests {
 
     #[test]
     fn self_updating_unwrap() {
-        let mut self_updating=SelfUpdating::of(String::from("t"));
+        let self_updating=SelfUpdating::of(String::from("t"));
         assert_eq!(self_updating.unwrap(),"t")
     }
 
     #[test]
     fn self_updating_deref() {
-        let mut self_updating=SelfUpdating::of(String::from("t"));
+        let self_updating=SelfUpdating::of(String::from("t"));
         assert_eq!(self_updating.len(),1);
     }
 
