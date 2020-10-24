@@ -6,6 +6,7 @@ mod transfer {
     use context::Transfer;
     use std::intrinsics::transmute;
     use std::ops::{Deref, DerefMut};
+    use crate::utils::SelfUpdating;
 
     pub enum ValueExchangeContainer<V> {
         Value(V),
@@ -51,37 +52,6 @@ mod transfer {
             }
         }
     }
-
-    struct SelfUpdating<T>(Option<T>);
-
-    impl<T> SelfUpdating<T> {
-        fn of(initial: T) -> Self {
-            Self(Some(initial))
-        }
-
-        fn update<F: Fn(T) -> T>(&mut self, op: F) {
-            self.0 = Some(op(self.0.take().unwrap()))
-        }
-
-        fn unwrap(mut self) -> T {
-            self.0.unwrap()
-        }
-    }
-
-    impl<T> Deref for SelfUpdating<T> {
-        type Target = T;
-
-        fn deref(&self) -> &Self::Target {
-            self.0.as_ref().unwrap()
-        }
-    }
-
-    impl<T> DerefMut for SelfUpdating<T> {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            self.0.as_mut().unwrap()
-        }
-    }
-
 
     pub struct ValueMoveTransfer {
         raw_transfer: SelfUpdating<Transfer>
@@ -167,38 +137,6 @@ mod transfer {
             let exchange_container=ValueExchangeContainer::prepare_exchange(1);
             let dup_container = ValueExchangeContainer::<i32>::of_pointer(exchange_container.make_pointer());
             assert_eq!(dup_container.receive_content(),1)
-        }
-        #[test]
-        fn self_updating_init() {
-            let mut self_updating=SelfUpdating::of(String::from("t"));
-            match self_updating.0 {
-                Some(v) => assert_eq!(v,"t"),
-                _ => panic!("invalid state")
-            }
-        }
-
-        #[test]
-        fn self_updating_unwrap() {
-            let mut self_updating=SelfUpdating::of(String::from("t"));
-            assert_eq!(self_updating.unwrap(),"t")
-        }
-
-        #[test]
-        fn self_updating_deref() {
-            let mut self_updating=SelfUpdating::of(String::from("t"));
-            assert_eq!(self_updating.len(),1);
-        }
-
-        #[test]
-        fn self_updating_deref_mut() {
-            let mut self_updating=SelfUpdating::of(String::from("test"));
-            assert_eq!(self_updating.remove(0),'t');
-        }
-        #[test]
-        fn self_updating_perform_update() {
-            let mut self_updating=SelfUpdating::of(String::from("test"));
-            self_updating.update(|s| s.repeat(2));
-            assert_eq!(self_updating.unwrap(),"testtest");
         }
 
         static mut stack:Option<ProtectedFixedSizeStack> =None;
