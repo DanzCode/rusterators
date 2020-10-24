@@ -97,6 +97,7 @@ mod transfer {
                 panic!("tried to read nullpointer from transfer")
             } else {
                 ValueExchangeContainer::<V>::of_pointer(self.raw_transfer.data).receive_content()
+
             }
         }
 
@@ -106,8 +107,35 @@ mod transfer {
         }
     }
 
+    struct ReceivableValueTransfer(ValueMoveTransfer);
+    struct SuspendableValueTransfer(ValueMoveTransfer);
+
+    impl ReceivableValueTransfer {
+        fn init(raw_transfer:Transfer) -> Self {
+            Self(ValueMoveTransfer::new(raw_transfer))
+        }
+
+        fn receive<V>(self) -> (SuspendableValueTransfer,V) {
+            let received_content=self.0.move_transfer_in();
+            (SuspendableValueTransfer(self.0),received_content)
+        }
+    }
+
+    impl SuspendableValueTransfer {
+        fn init(raw_transfer:Transfer) -> Self {
+            Self(ValueMoveTransfer::new(raw_transfer))
+        }
+
+        fn suspend<V>(mut self,content:V) -> ReceivableValueTransfer {
+            self.0.send_content(content);
+            ReceivableValueTransfer(self.0)
+        }
+    }
+
     mod tests {
-        use crate::exchange::transfer::{ValueExchangeContainer, SelfUpdating};
+        use crate::exchange::transfer::{ValueExchangeContainer, SelfUpdating, ValueMoveTransfer, ReceivableValueTransfer, SuspendableValueTransfer};
+        use context::stack::ProtectedFixedSizeStack;
+        use context::{ContextFn, Transfer, Context};
 
         #[test]
         fn exchange_container_prepare() {
@@ -134,6 +162,12 @@ mod transfer {
             assert_eq!(container.has_content(),false);
         }
 
+        #[test]
+        fn exchange_container_dup_by_pointer() {
+            let exchange_container=ValueExchangeContainer::prepare_exchange(1);
+            let dup_container = ValueExchangeContainer::<i32>::of_pointer(exchange_container.make_pointer());
+            assert_eq!(dup_container.receive_content(),1)
+        }
         #[test]
         fn self_updating_init() {
             let mut self_updating=SelfUpdating::of(String::from("t"));
@@ -167,6 +201,59 @@ mod transfer {
             assert_eq!(self_updating.unwrap(),"testtest");
         }
 
+        static mut stack:Option<ProtectedFixedSizeStack> =None;
 
+        fn create_test_context(test_fn:ContextFn, start_data:usize) -> Transfer {
+            unsafe {
+                stack = Some(ProtectedFixedSizeStack::default())
+            }
+           unsafe { Transfer::new(Context::new(stack.as_ref().unwrap(),test_fn),start_data) }
+        }
+        extern "C" fn init_test(t:Transfer) -> ! {
+            panic!("")
+        }
+        #[test]
+        fn value_transfer_init() {
+            let test_transfer =create_test_context(init_test,2);
+            let value_transfer=ValueMoveTransfer::new(test_transfer);
+            assert_eq!(value_transfer.raw_transfer.data, 2)
+        }
+
+        #[test]
+        fn value_transfer_receive() {
+            let mut test_container=ValueExchangeContainer::prepare_exchange(2);
+            let test_transfer =create_test_context(init_test,test_container.make_pointer());
+            let value_transfer=ValueMoveTransfer::new(test_transfer);
+
+            assert_eq!(value_transfer.move_transfer_in::<i32>(), 2)
+        }
+
+        #[test]
+        fn value_transfer_send() {
+            extern "C" fn send_test(mut t:Transfer) -> ! {
+                assert_eq!(ValueExchangeContainer::<i32>::of_pointer(t.data).receive_content(),2);
+                unsafe {t=t.context.resume(0);}
+                panic!()
+            }
+            let test_transfer =create_test_context(send_test,0);
+            let mut value_transfer=ValueMoveTransfer::new(test_transfer);
+            value_transfer.send_content::<i32>(2);
+        }
+
+        #[test]
+        fn receive_suspendable_transfer_cycle(){
+            extern "C" fn send_test(mut t:Transfer) -> ! {
+                let mut receive_transfer = ReceivableValueTransfer::init(t);
+                let (mut suspend_transfer,rec)=receive_transfer.receive::<i32>();
+                assert_eq!(rec,2);
+                receive_transfer=suspend_transfer.suspend(3);
+                panic!()
+            }
+            let test_transfer =SuspendableValueTransfer::init(create_test_context(send_test,0));
+            let receive_transfer=test_transfer.suspend(2);
+            let (_,rec) = receive_transfer.receive::<i32>();
+            assert_eq!(rec,3)
+
+        }
     }
 }
