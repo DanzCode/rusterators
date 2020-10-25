@@ -201,10 +201,12 @@ mod execution {
     use crate::exchange::transfer::{SuspendableValueTransfer, ReceivableValueTransfer};
     use std::marker::PhantomData;
     use context::{Transfer, Context};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
     use context::stack::ProtectedFixedSizeStack;
+    use std::thread::spawn;
+    use std::mem::replace;
 
-    type PanicData=Box<dyn Any>;
+    type PanicData=Box<dyn Any+Send+'static>;
     #[derive(Debug)]
     enum UnwindReason {
         Panic(PanicData),
@@ -226,7 +228,7 @@ mod execution {
         Drop()
     }
 
-    pub struct ContextChannel<SendMessage,ReceivedMessage> {
+    pub struct ContextChannel {
         send_transfer: SelfUpdating<SuspendableValueTransfer>,
         _make_compiler_happy: PhantomData<(SendMessage,ReceivedMessage)>
     }
@@ -249,36 +251,89 @@ mod execution {
     }
 
     pub struct CoroutineChannel<Yield,Return,Receive>(ContextChannel<SuspenseType<Yield,Return>,ResumeType<Receive>>,bool);
-    pub struct InvocationChannel<Yield,Return,Receive>(ContextChannel<ResumeType<Receive>,SuspenseType<Yield,Return>>);
 
-    pub struct Coroutine<Yield,Return,Receive> {
-        stack: ProtectedFixedSizeStack,
-        channel: InvocationChannel<Yield,Return,Receive>
+    pub struct Coroutine<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return> {
+        state:SelfUpdating<InvocationState<Yield,Return,Receive,F>>
     }
 
-    impl<Yield,Return,Receive> Coroutine<Yield,Return,Receive> {
-        pub fn start<F:Fn(&mut CoroutineChannel<Yield,Return,Receive>, Receive)->Return>(routine_fn:F, initial:Receive) -> Self {
+    impl<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return> Coroutine<Yield,Return,Receive,F> {
+        pub fn start(routine_fn:F, initial:Receive) -> Self {
             let stack=ProtectedFixedSizeStack::default();
             let send_transfer=SuspendableValueTransfer::init(Transfer::new(unsafe{Context::new(&stack,run_co_context::<Yield,Return,Receive,F>)},0));
+            unimplemented!()
+        }
 
+        pub fn resume(&mut self,send:Receive) -> Option<Yield> {
+            match &mut self.state {
+                InvocationState::Prepared(handler) => {
+                    let stack=ProtectedFixedSizeStack::default();
+                    let (send_transfer,rec)=
+                        SuspendableValueTransfer::init(Transfer::new(unsafe {Context::new(&stack,run_co_context::<Yield,Return,Receive,F>)},0))
+                        .suspend::<(F,Receive)>((handler,send)).receive::<SuspenseType<Yield,Return>>();
+                    self.change_state(InvocationState::Running(stack,ContextChannel::<ResumeType<Receive>,SuspenseType<Yield,Return>>::new(send_transfer)));
+                    self.receive(rec)
+                },
+                InvocationState::Running(_,channel) => {
+                    self.receive(channel.suspend_context(ResumeType::Yield(send)))
+                },
+                InvocationState::Completed(_) => None
+            }
+        }
+
+        fn change_state(&mut self, next:InvocationState<Yield,Return,Receive,F>) {
+            replace(&mut self.state,next);
+        }
+
+        pub fn result(&self) -> Option<&Result<Return,()>> {
+            match &self.state {
+                InvocationState::Completed(c) => Some(&c),
+                _ => None
+            }
+        }
+
+        fn receive(&mut self,rec:SuspenseType<Yield,Return>) -> Option<Yield> {
+            match rec {
+                SuspenseType::Yield(y) => Some(y),
+                SuspenseType::Complete(ct) => {
+                    match ct {
+                        CompleteType::Return(r) => {
+                            self.change_state(InvocationState::Completed(Ok(r)))
+                        }
+                        CompleteType::Unwind(u) => {
+                            self.change_state(InvocationState::Completed(Err(())));
+                            if let UnwindReason::Panic(p)=u {
+                                resume_unwind(p)
+                            }
+                        }
+                    };
+                    None
+                }
+            }
         }
     }
 
-    impl<Yield,Return,Receive> InvocationChannel<Yield,Return,Receive> {
-        fn create(transfer:SuspendableValueTransfer) -> Self {
-            Self(ContextChannel::<SuspenseType<Yield,Return>,ResumeType<Receive>>::new(transfer),false)
-        }
+    enum InvocationState<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return> {
+        Prepared(F),
+        Running(ProtectedFixedSizeStack,ContextChannel<ResumeType<Receive>,SuspenseType<Yield,Return>>),
+        Completed(Result<Return,()>)
     }
+
     impl<Yield,Return,Receive> CoroutineChannel<Yield,Return,Receive> {
         fn create(transfer:SuspendableValueTransfer) -> Self {
             Self(ContextChannel::<SuspenseType<Yield,Return>,ResumeType<Receive>>::new(transfer),false)
         }
+
         pub fn yield_with(&mut self,yield_val:Yield) -> Receive {
-            match self.0.suspend_context(SuspenseType::Yield(yield_val)) {
+            let received=self.0.suspend_context(SuspenseType::Yield(yield_val));
+            self.resume(received)
+        }
+
+        fn resume(&mut self,received_val:ResumeType<Receive>) -> Receive {
+            match received_val {
                 ResumeType::Yield(received_val) => received_val,
                 ResumeType::Drop() => {
                     self.1=true;
-                    panic!("Unwinding coroutine context due to drop message")
+                    panic!("Unwinding coroutine context due to coroutine drop")
                 }
             }
         }
