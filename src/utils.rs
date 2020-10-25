@@ -26,6 +26,11 @@ impl<T> SelfUpdating<T> {
     }
 }
 
+impl<T> From<T> for SelfUpdating<T> {
+    fn from(r: T) -> Self {
+        SelfUpdating::of(r)
+    }
+}
 impl<T> Deref for SelfUpdating<T> {
     type Target = T;
 

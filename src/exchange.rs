@@ -195,16 +195,14 @@ mod transfer {
     }
 }
 
-mod execution {
+pub mod execution {
     use std::any::Any;
     use crate::utils::SelfUpdating;
-    use crate::exchange::transfer::{SuspendableValueTransfer, ReceivableValueTransfer};
+    use crate::exchange::transfer::{SuspendableValueTransfer, ReceivableValueTransfer, ValueMoveTransfer, ValueExchangeContainer};
     use std::marker::PhantomData;
     use context::{Transfer, Context};
     use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
     use context::stack::ProtectedFixedSizeStack;
-    use std::thread::spawn;
-    use std::mem::replace;
 
     type PanicData=Box<dyn Any+Send+'static>;
     #[derive(Debug)]
@@ -229,102 +227,111 @@ mod execution {
     }
 
     pub struct ContextChannel {
-        send_transfer: SelfUpdating<SuspendableValueTransfer>,
-        _make_compiler_happy: PhantomData<(SendMessage,ReceivedMessage)>
+        send_transfer: SelfUpdating<SuspendableValueTransfer>
     }
 
-    impl<SendMessage,ReceivedMessage> ContextChannel<SendMessage,ReceivedMessage> {
+    impl ContextChannel {
         fn new(transfer:SuspendableValueTransfer) -> Self {
-            Self {send_transfer:SelfUpdating::of(transfer),_make_compiler_happy:PhantomData}
+            Self {send_transfer:SelfUpdating::of(transfer)}
         }
 
-        fn suspend_context(&mut self,send:SendMessage) -> ReceivedMessage {
+        fn suspend_context<SendMessage,ReceiveMessage>(&mut self,send:SendMessage) -> ReceiveMessage {
             self.send_transfer.returning_update(move |t| {
                 let rec_transfer=t.suspend::<SendMessage>(send);
-                rec_transfer.receive::<ReceivedMessage>()
+                rec_transfer.receive::<ReceiveMessage>()
             })
         }
 
-        fn complete_context(&mut self, send: SendMessage) -> ! {
+        fn complete_context<SendMessage>(&mut self, send: SendMessage) -> ! {
             self.send_transfer.consume(move |t| {t.suspend(send);})
         }
     }
 
-    pub struct CoroutineChannel<Yield,Return,Receive>(ContextChannel<SuspenseType<Yield,Return>,ResumeType<Receive>>,bool);
+    pub struct CoroutineChannel<Yield,Return,Receive>(ContextChannel,bool,PhantomData<(Yield,Return,Receive)>);
 
-    pub struct Coroutine<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return> {
-        state:SelfUpdating<InvocationState<Yield,Return,Receive,F>>
+    pub struct CoroutineInvoker<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return>(F,PhantomData<(Yield,Return,Receive)>);
+
+    impl<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return> CoroutineInvoker<Yield,Return,Receive,F>{
+        pub fn new(handler:F) -> Self {
+            Self(handler,PhantomData)
+        }
+        pub fn invoke(self,initial:Receive) -> (Coroutine<Yield,Return,Receive>,ResumeResult<Yield,Return>) {
+            let stack=ProtectedFixedSizeStack::default();
+            let mut channel=
+                ContextChannel::new(SuspendableValueTransfer::init(Transfer::new(unsafe {Context::new(&stack,run_co_context::<Yield,Return,Receive,F>)},0)));
+            let rec=channel.suspend_context::<(F,Receive),SuspenseType<Yield,Return>>((self.0,initial));
+            let mut coroutine = Coroutine { state: InvocationState::Running(stack,channel,PhantomData)};
+            let rec = coroutine.receive(rec);
+            (coroutine,rec)
+        }
     }
 
-    impl<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return> Coroutine<Yield,Return,Receive,F> {
-        pub fn start(routine_fn:F, initial:Receive) -> Self {
-            let stack=ProtectedFixedSizeStack::default();
-            let send_transfer=SuspendableValueTransfer::init(Transfer::new(unsafe{Context::new(&stack,run_co_context::<Yield,Return,Receive,F>)},0));
-            unimplemented!()
+    pub struct Coroutine<Yield,Return,Receive> {
+        state:InvocationState<Yield,Return,Receive>
+    }
+    #[derive(Debug)]
+    pub enum ResumeResult<Yield,Return> {
+        Yield(Yield),
+        Return(Return)
+    }
+
+    impl<Yield,Return,Receive> Coroutine<Yield,Return,Receive> {
+
+        pub fn resume(&mut self,send:Receive) -> ResumeResult<Yield,Return> {
+            let rec=match &mut self.state {
+                InvocationState::Running(_, channel,_) =>
+                    channel.suspend_context(ResumeType::Yield(send))
+                ,
+                InvocationState::Completed(_) => panic!("tried to send to completed context")
+            };
+            self.receive(rec)
         }
 
-        pub fn resume(&mut self,send:Receive) -> Option<Yield> {
-            match &mut self.state {
-                InvocationState::Prepared(handler) => {
-                    let stack=ProtectedFixedSizeStack::default();
-                    let (send_transfer,rec)=
-                        SuspendableValueTransfer::init(Transfer::new(unsafe {Context::new(&stack,run_co_context::<Yield,Return,Receive,F>)},0))
-                        .suspend::<(F,Receive)>((handler,send)).receive::<SuspenseType<Yield,Return>>();
-                    self.change_state(InvocationState::Running(stack,ContextChannel::<ResumeType<Receive>,SuspenseType<Yield,Return>>::new(send_transfer)));
-                    self.receive(rec)
-                },
-                InvocationState::Running(_,channel) => {
-                    self.receive(channel.suspend_context(ResumeType::Yield(send)))
-                },
-                InvocationState::Completed(_) => None
+        pub fn is_completed(&self) -> bool {
+            match self.state {
+                InvocationState::Completed(_) =>true,
+                _ => false
             }
         }
 
-        fn change_state(&mut self, next:InvocationState<Yield,Return,Receive,F>) {
-            replace(&mut self.state,next);
-        }
-
-        pub fn result(&self) -> Option<&Result<Return,()>> {
-            match &self.state {
-                InvocationState::Completed(c) => Some(&c),
-                _ => None
-            }
-        }
-
-        fn receive(&mut self,rec:SuspenseType<Yield,Return>) -> Option<Yield> {
+        fn receive(&mut self,rec:SuspenseType<Yield,Return>) -> ResumeResult<Yield,Return> {
             match rec {
-                SuspenseType::Yield(y) => Some(y),
+                SuspenseType::Yield(y) => ResumeResult::Yield(y),
                 SuspenseType::Complete(ct) => {
                     match ct {
                         CompleteType::Return(r) => {
-                            self.change_state(InvocationState::Completed(Ok(r)))
+                            self.state=InvocationState::Completed(CompleteVariant::Return);
+                            ResumeResult::Return(r)
                         }
                         CompleteType::Unwind(u) => {
-                            self.change_state(InvocationState::Completed(Err(())));
+                            self.state=InvocationState::Completed(CompleteVariant::Unwind);
                             if let UnwindReason::Panic(p)=u {
                                 resume_unwind(p)
+                            } else {
+                                panic!("coroutine context dropped outside of coroutine constructor")
                             }
                         }
-                    };
-                    None
+                    }
                 }
             }
         }
     }
 
-    enum InvocationState<Yield,Return,Receive,F:Fn(&mut CoroutineChannel<Yield,Return,Receive>,Receive)->Return> {
-        Prepared(F),
-        Running(ProtectedFixedSizeStack,ContextChannel<ResumeType<Receive>,SuspenseType<Yield,Return>>),
-        Completed(Result<Return,()>)
+    pub enum CompleteVariant {
+        Return,Unwind
+    }
+    pub enum InvocationState<Yield,Return,Receive> {
+        Running(ProtectedFixedSizeStack,ContextChannel,PhantomData<(Yield,Return,Receive)>),
+        Completed(CompleteVariant)
     }
 
     impl<Yield,Return,Receive> CoroutineChannel<Yield,Return,Receive> {
         fn create(transfer:SuspendableValueTransfer) -> Self {
-            Self(ContextChannel::<SuspenseType<Yield,Return>,ResumeType<Receive>>::new(transfer),false)
+            Self(ContextChannel::new(transfer),false,PhantomData)
         }
 
         pub fn yield_with(&mut self,yield_val:Yield) -> Receive {
-            let received=self.0.suspend_context(SuspenseType::Yield(yield_val));
+            let received=self.0.suspend_context::<SuspenseType<Yield,Return>,ResumeType<Receive>>(SuspenseType::Yield(yield_val));
             self.resume(received)
         }
 
@@ -339,11 +346,11 @@ mod execution {
         }
 
         fn return_with(&mut self, return_val:Return) -> ! {
-            self.0.complete_context(SuspenseType::Complete(CompleteType::Return(return_val)))
+            self.0.complete_context::<SuspenseType<Yield,Return>>(SuspenseType::Complete(CompleteType::Return(return_val)))
         }
 
         fn unwind(&mut self, unwind_reason:UnwindReason) -> ! {
-            self.0.complete_context(SuspenseType::Complete(CompleteType::Unwind(unwind_reason)))
+            self.0.complete_context::<SuspenseType<Yield,Return>>(SuspenseType::Complete(CompleteType::Unwind(unwind_reason)))
         }
     }
 
@@ -382,8 +389,8 @@ mod execution {
         #[test]
         fn context_channel_test() {
             let raw_t=create_test_context(init_test,0);
-            let mut channel = ContextChannel::<ResumeType<u32>,SuspenseType<f64,i32>> {  _make_compiler_happy:PhantomData,send_transfer:SelfUpdating::of(SuspendableValueTransfer::init(raw_t)) };
-            let t=channel.suspend_context(ResumeType::Yield(1));
+            let mut channel = ContextChannel {  send_transfer:SelfUpdating::of(SuspendableValueTransfer::init(raw_t)) };
+            let t=channel.suspend_context::<ResumeType<u32>,SuspenseType<f64,i32>>(ResumeType::Yield(1));
            println!("{:?}",t)
         }
     }
