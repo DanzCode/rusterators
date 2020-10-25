@@ -7,10 +7,20 @@ impl<T> SelfUpdating<T> {
         Self(Some(initial))
     }
 
-    pub fn update<F: Fn(T) -> T>(&mut self, op: F) {
+    pub fn update<F: FnOnce(T) -> T>(&mut self, op: F) {
         self.0 = Some(op(self.0.take().unwrap()))
     }
 
+    pub fn returning_update<R,F: FnOnce(T) -> (T,R)>(&mut self, op: F) -> R {
+        let (next,res)=op(self.0.take().unwrap());
+        self.0 = Some(next);
+        res
+    }
+
+    pub fn consume<F:FnOnce(T)>(&mut self,op:F) -> ! {
+        op(self.0.take().unwrap());
+        todo!("require closure type to return '!'. Somewhat experimental though")
+    }
     pub fn unwrap(self) -> T {
         self.0.unwrap()
     }
@@ -64,6 +74,21 @@ mod tests {
         let mut self_updating=SelfUpdating::of(String::from("test"));
         self_updating.update(|s| s.repeat(2));
         assert_eq!(self_updating.unwrap(),"testtest");
+    }
+
+    #[test]
+    #[should_panic]
+    fn self_updating_consume() {
+        let mut self_updating=SelfUpdating::of(String::from("test"));
+        self_updating.consume(|s| panic!(s));
+    }
+
+    #[test]
+    fn self_updating_perform_returning_update() {
+        let mut self_updating=SelfUpdating::of(String::from("test"));
+        let res=self_updating.returning_update(|s| (s.repeat(2),0.3));
+        assert_eq!(self_updating.unwrap(),"testtest");
+        assert_eq!(res,0.3);
     }
 
 }
