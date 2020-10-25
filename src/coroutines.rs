@@ -102,7 +102,7 @@ mod transfer {
     }
 
     mod tests {
-        use crate::exchange::transfer::{ValueExchangeContainer, ValueMoveTransfer, ReceivableValueTransfer, SuspendableValueTransfer};
+        use crate::coroutines::transfer::{ValueExchangeContainer, ValueMoveTransfer, ReceivableValueTransfer, SuspendableValueTransfer};
         use context::stack::ProtectedFixedSizeStack;
         use context::{ContextFn, Transfer, Context};
 
@@ -198,7 +198,7 @@ mod transfer {
 pub mod execution {
     use std::any::Any;
     use crate::utils::SelfUpdating;
-    use crate::exchange::transfer::{SuspendableValueTransfer, ReceivableValueTransfer, ValueMoveTransfer, ValueExchangeContainer};
+    use crate::coroutines::transfer::{SuspendableValueTransfer, ReceivableValueTransfer, ValueMoveTransfer, ValueExchangeContainer};
     use std::marker::PhantomData;
     use context::{Transfer, Context};
     use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
@@ -366,10 +366,10 @@ pub mod execution {
     }
 
     mod tests {
-        use crate::exchange::execution::{ContextChannel, ResumeType, SuspenseType};
+        use crate::coroutines::execution::{ContextChannel, ResumeType, SuspenseType};
         use context::stack::ProtectedFixedSizeStack;
         use context::{ContextFn, Transfer, Context};
-        use crate::exchange::transfer::{SuspendableValueTransfer, ValueMoveTransfer};
+        use crate::coroutines::transfer::{SuspendableValueTransfer, ValueMoveTransfer};
         use crate::utils::SelfUpdating;
         use std::marker::PhantomData;
 

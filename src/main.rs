@@ -1,6 +1,6 @@
-use crate::exchange::execution::{CoroutineInvoker, CoroutineChannel};
+use crate::coroutines::execution::{CoroutineInvoker, CoroutineChannel};
 
-mod exchange;
+mod coroutines;
 mod utils;
 
 fn main() {
