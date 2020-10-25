@@ -1,7 +1,7 @@
 /**
 *
 */
-mod transfer {
+pub mod transfer {
     use std::mem::take;
     use context::Transfer;
     use std::intrinsics::transmute;
@@ -10,6 +10,12 @@ mod transfer {
     pub enum ValueExchangeContainer<V> {
         Value(V),
         Empty,
+    }
+
+    impl<V> From<V> for ValueExchangeContainer<V> {
+        fn from(v: V) -> Self {
+            ValueExchangeContainer::prepare_exchange(v)
+        }
     }
 
     impl<V> Default for ValueExchangeContainer<V> {
@@ -204,6 +210,7 @@ pub mod execution {
     use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
     use context::stack::ProtectedFixedSizeStack;
 
+
     type PanicData=Box<dyn Any+Send+'static>;
     #[derive(Debug)]
     enum UnwindReason {
@@ -275,6 +282,27 @@ pub mod execution {
         Return(Return)
     }
 
+    pub enum CompleteVariant {
+        Return,Unwind
+    }
+    pub enum InvocationState<Yield,Return,Receive> {
+        Running(ProtectedFixedSizeStack,ContextChannel,PhantomData<(Yield,Return,Receive)>),
+        Completed(CompleteVariant)
+    }
+
+    impl<Yield,Return,Receive> Drop for Coroutine<Yield,Return,Receive> {
+        fn drop(&mut self) {
+            match &mut self.state {
+                InvocationState::Running(_,channel,_) => {
+                    match channel.suspend_context::<ResumeType<Receive>,SuspenseType<Yield,Return>>(ResumeType::Drop()) {
+                        SuspenseType::Complete(CompleteType::Unwind(_)) => {},
+                        _ => panic!("inconstistent coroutine context drop")
+                    }
+                },
+                _=>{}
+            }
+        }
+    }
     impl<Yield,Return,Receive> Coroutine<Yield,Return,Receive> {
 
         pub fn resume(&mut self,send:Receive) -> ResumeResult<Yield,Return> {
@@ -315,14 +343,6 @@ pub mod execution {
                 }
             }
         }
-    }
-
-    pub enum CompleteVariant {
-        Return,Unwind
-    }
-    pub enum InvocationState<Yield,Return,Receive> {
-        Running(ProtectedFixedSizeStack,ContextChannel,PhantomData<(Yield,Return,Receive)>),
-        Completed(CompleteVariant)
     }
 
     impl<Yield,Return,Receive> CoroutineChannel<Yield,Return,Receive> {
