@@ -39,6 +39,7 @@ pub mod transfer {
         }
 
         pub fn receive_content(&mut self) -> V {
+            println!("ex receive");
             match take(self) {
                 Self::Value(v) => v,
                 Self::Empty => panic!("No content to receive")
@@ -70,15 +71,17 @@ pub mod transfer {
         pub fn send_value(&mut self, val: V) {
             match self.0 {
                 ValueExchangeContainer::Value(_) => panic!("tried to write to non-empty container"),
-                ValueExchangeContainer::Empty => { replace(self.0, ValueExchangeContainer::prepare_exchange(val)); }
+                ValueExchangeContainer::Empty => { *self.0=ValueExchangeContainer::prepare_exchange(val); }
             }
+            println!("wrote ex ref")
         }
 
         pub fn receive_ref(&mut self, p: usize) {
             self.0 = match self.0 {
                 ValueExchangeContainer::Empty => ValueExchangeContainer::of_pointer(p),
                 _ => panic!("tried to forget nonm-empty container ref")
-            }
+            };
+            println!("ex ref received");
         }
     }
 
@@ -125,34 +128,43 @@ pub mod transfer {
 
         pub fn yield_with(&mut self, val: Send) -> Receive {
             self.send(val);
-            self.suspend()
+            let t=self.suspend();
+            println!("yield with ended");
+            t
         }
 
         fn send(&mut self, val: Send) {
             match &mut self.send_ref {
                 Some(send_ref) => send_ref.send_value(val),
                 None => panic!("invalid exchange state for sending")
-            }
+            };
+            println!("ex transfer sended");
         }
 
         pub(super) fn suspend(&mut self) -> Receive {
             let receive_container_pointer = self.receive_container.make_pointer();
+            println!("about to suspend");
             self.pointer_transfer.update(|t| unsafe { t.context.resume(receive_container_pointer) });
+            println!("awoke");
             if self.pointer_transfer.data != 0 {
                 self.send_ref = Some(self.send_ref.take().map(|mut s| {
                     s.receive_ref(self.pointer_transfer.data);
                     s
                 }).unwrap_or_else(|| ExchangeContainerRef::of_pointer(self.pointer_transfer.data)));
+                println!("prepared send_ref");
             } else {
                 self.send_ref = None;
             }
-            self.receive_container.receive_content()
+            let tmp=self.receive_container.receive_content();
+            println!("received content");
+            tmp
         }
     }
 
     mod tests {
         use context::{Context, ContextFn, Transfer};
         use context::stack::ProtectedFixedSizeStack;
+        use crate::coroutines::transfer::ValueExchangeContainer;
 
         #[test]
         fn exchange_container_prepare() {
@@ -291,6 +303,7 @@ pub mod execution {
                 InvocationState::Running(channel, _) => channel.suspend(send),
                 InvocationState::Completed(_) => panic!("tried to send to completed context")
             };
+
             self.receive(rec)
         }
 
@@ -332,6 +345,7 @@ pub mod execution {
     impl<'a, Yield, Return, Receive> CoroutineChannel<'a, Yield, Return, Receive> {
         pub fn suspend(&mut self, send: Yield) -> Receive {
             let received = self.0.yield_with(SuspenseType::Yield(send));
+            println!("received");
             self.receive(received)
         }
 
@@ -340,7 +354,7 @@ pub mod execution {
                 ResumeType::Yield(y) => y,
                 ResumeType::Drop() => {
                     self.1 = true;
-                    panic!()
+                    panic!("unwinding coroutine stack for drop")
                 }
             }
         }
@@ -348,7 +362,9 @@ pub mod execution {
 
     impl<'a, Yield, Return, Receive> InvocationChannel<'a, Yield, Return, Receive> {
         pub fn suspend(&mut self, send: Receive) -> SuspenseType<Yield, Return> {
-            self.0.yield_with(ResumeType::Yield(send))
+            let t=self.0.yield_with(ResumeType::Yield(send));
+            println!("awoke in invocation channel after susped");
+            t
         }
         pub fn unwind(&mut self) {
             match self.0.yield_with(ResumeType::Drop()) {
@@ -364,7 +380,10 @@ pub mod execution {
         let mut channel = CoroutineChannel(exchange_transfer, false);
         let result = catch_unwind(AssertUnwindSafe(|| {
             let initial = channel.receive(initial);
-            routine_fn(&mut channel, initial)
+            println!("invoking co_fn");
+            let t=routine_fn(&mut channel, initial);
+            println!("done");
+            t
         }));
         channel.0.dispose_with(SuspenseType::Complete(match result {
             Ok(ret) => CompleteType::Return(ret),

@@ -8,6 +8,8 @@ pub struct PureGeneratorFactory<Yield, Return, F>(F, PhantomData<(Yield, Return)
 
 pub struct Generator<'a, Yield, Return, Receive>(GeneratorState<'a, Yield, Return, Receive>);
 
+pub type PureGenerator<'a,Yield,Return> = Generator<'a,Yield,Return,()>;
+
 pub struct GeneratorChannel<'a, 'b: 'a, Yield, Return, Receive>(&'a mut CoroutineChannel<'b, Yield, Return, Receive>);
 
 pub struct GeneratorIterator<'a, Yield, Return, Receive, RF: Fn() -> Receive>(Generator<'a, Yield, Return, Receive>, RF);
