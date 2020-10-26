@@ -39,7 +39,6 @@ pub mod transfer {
         }
 
         pub fn receive_content(&mut self) -> V {
-            println!("ex receive");
             match take(self) {
                 Self::Value(v) => v,
                 Self::Empty => panic!("No content to receive")
@@ -73,7 +72,6 @@ pub mod transfer {
                 ValueExchangeContainer::Value(_) => panic!("tried to write to non-empty container"),
                 ValueExchangeContainer::Empty => { *self.0=ValueExchangeContainer::prepare_exchange(val); }
             }
-            println!("wrote ex ref")
         }
 
         pub fn receive_ref(&mut self, p: usize) {
@@ -81,7 +79,6 @@ pub mod transfer {
                 ValueExchangeContainer::Empty => ValueExchangeContainer::of_pointer(p),
                 _ => panic!("tried to forget nonm-empty container ref")
             };
-            println!("ex ref received");
         }
     }
 
@@ -129,7 +126,6 @@ pub mod transfer {
         pub fn yield_with(&mut self, val: Send) -> Receive {
             self.send(val);
             let t=self.suspend();
-            println!("yield with ended");
             t
         }
 
@@ -138,25 +134,20 @@ pub mod transfer {
                 Some(send_ref) => send_ref.send_value(val),
                 None => panic!("invalid exchange state for sending")
             };
-            println!("ex transfer sended");
         }
 
         pub(super) fn suspend(&mut self) -> Receive {
             let receive_container_pointer = self.receive_container.make_pointer();
-            println!("about to suspend");
             self.pointer_transfer.update(|t| unsafe { t.context.resume(receive_container_pointer) });
-            println!("awoke");
             if self.pointer_transfer.data != 0 {
                 self.send_ref = Some(self.send_ref.take().map(|mut s| {
                     s.receive_ref(self.pointer_transfer.data);
                     s
                 }).unwrap_or_else(|| ExchangeContainerRef::of_pointer(self.pointer_transfer.data)));
-                println!("prepared send_ref");
             } else {
                 self.send_ref = None;
             }
             let tmp=self.receive_container.receive_content();
-            println!("received content");
             tmp
         }
     }
@@ -249,9 +240,9 @@ pub mod execution {
         Drop(),
     }
 
-    pub struct CoroutineFactory<Yield, Return, Receive, F: Fn(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(F, PhantomData<(Yield, Return, Receive)>);
+    pub struct CoroutineFactory<Yield, Return, Receive, F: FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(F, PhantomData<(Yield, Return, Receive)>);
 
-    impl<Yield, Return, Receive, F: Fn(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return> CoroutineFactory<Yield, Return, Receive, F> {
+    impl<Yield, Return, Receive, F: FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return> CoroutineFactory<Yield, Return, Receive, F> {
         pub fn new(handler: F) -> Self {
             Self(handler, PhantomData)
         }
@@ -345,7 +336,6 @@ pub mod execution {
     impl<'a, Yield, Return, Receive> CoroutineChannel<'a, Yield, Return, Receive> {
         pub fn suspend(&mut self, send: Yield) -> Receive {
             let received = self.0.yield_with(SuspenseType::Yield(send));
-            println!("received");
             self.receive(received)
         }
 
@@ -363,7 +353,6 @@ pub mod execution {
     impl<'a, Yield, Return, Receive> InvocationChannel<'a, Yield, Return, Receive> {
         pub fn suspend(&mut self, send: Receive) -> SuspenseType<Yield, Return> {
             let t=self.0.yield_with(ResumeType::Yield(send));
-            println!("awoke in invocation channel after susped");
             t
         }
         pub fn unwind(&mut self) {
@@ -374,15 +363,13 @@ pub mod execution {
         }
     }
 
-    extern "C" fn run_co_context<Yield, Return, Receive, F: Fn(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(raw_transfer: Transfer) -> ! {
+    extern "C" fn run_co_context<Yield, Return, Receive, F: FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(raw_transfer: Transfer) -> ! {
         let (mut exchange_transfer, routine_fn) = ExchangingTransfer::<SuspenseType<Yield, Return>, ResumeType<Receive>>::create_receiving::<F>(raw_transfer);
         let initial = exchange_transfer.suspend();
         let mut channel = CoroutineChannel(exchange_transfer, false);
         let result = catch_unwind(AssertUnwindSafe(|| {
             let initial = channel.receive(initial);
-            println!("invoking co_fn");
             let t=routine_fn(&mut channel, initial);
-            println!("done");
             t
         }));
         channel.0.dispose_with(SuspenseType::Complete(match result {

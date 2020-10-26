@@ -1,26 +1,17 @@
 use rusterators::generators::{Generator, PureGeneratorFactory, PureGenerator};
 
 
-fn create_line_generator<'a>(file_content:Result<&'static str,String>) -> Generator<'a,String,Result<(),String>,()> {
-    println!("{:?}",file_content);
-    let content=match file_content {
-        Ok(o) => Some(String::from(o)),
-        Err(e) => None
-    };
+fn create_line_generator<'a>(file_content:Result<String,String>) -> Generator<'a,String,Result<(),String>,()> {
     Generator::new(move |g| {
-        println!("gen closure invoked");
-        match &content {
-            Some(content) => {
-                println!("o {}",content);
+        match &file_content {
+            Ok(content) => {
                 for l in content.lines() {
-                    println!("d{}",l);
-                    g.yield_val(String::from(l))
+
+                    g.yield_val(String::from(l.trim()))
                 }
-                println!("d2");
                 Ok(())
             },
-            None => {
-                println!("e");
+            Err(e) => {
                 Err(String::from("failure"))
             }
         }
@@ -29,14 +20,14 @@ fn create_line_generator<'a>(file_content:Result<&'static str,String>) -> Genera
 
 fn main() {
 
-    let mut g=create_line_generator(Ok(r#"1 line
+    let mut g=create_line_generator(Ok(String::from(r#"1 line
     2 line
     3 line
-    4 line"#));
-    println!("d");
-    g.resume(());
-    /*for s in  &mut g {
+    4 line"#)));
+
+    //g.resume(());
+    for s in  &mut g {
         println!("{}",s)
-    }*/
-    //println!("d {:?} {:?}",g.result(),std::env::current_dir().unwrap());
+    }
+    println!("d {:?} {:?}",g.result(),std::env::current_dir().unwrap());
 }
