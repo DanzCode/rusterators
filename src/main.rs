@@ -1,5 +1,4 @@
-use crate::coroutines::execution::{CoroutineFactory, CoroutineChannel};
-use crate::generators::{ReceivingGeneratorFactory, PureGeneratorFactory, Generator};
+use crate::generators::{Generator};
 
 
 mod coroutines;
@@ -30,8 +29,4 @@ fn main() {
         println!("{}",i)
     }
     println!("{} {:?}", generator.has_completed(), generator.result())
-}
-
-fn test(mut p0: Generator<i32, (), ()>) {
-
 }

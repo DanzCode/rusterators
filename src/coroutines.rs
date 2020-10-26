@@ -2,9 +2,11 @@
 *
 */
 pub mod transfer {
-    use std::mem::{take, swap, replace};
-    use context::Transfer;
     use std::intrinsics::transmute;
+    use std::mem::{replace, take};
+
+    use context::Transfer;
+
     use crate::utils::SelfUpdating;
 
     pub enum ValueExchangeContainer<V> {
@@ -43,7 +45,7 @@ pub mod transfer {
             }
         }
 
-        pub (super) fn make_pointer(&self) -> usize {
+        pub(super) fn make_pointer(&self) -> usize {
             unsafe { transmute::<*const Self, usize>(self as *const Self) }
         }
 
@@ -68,7 +70,7 @@ pub mod transfer {
         pub fn send_value(&mut self, val: V) {
             match self.0 {
                 ValueExchangeContainer::Value(_) => panic!("tried to write to non-empty container"),
-                ValueExchangeContainer::Empty => {replace(self.0, ValueExchangeContainer::prepare_exchange(val));}
+                ValueExchangeContainer::Empty => { replace(self.0, ValueExchangeContainer::prepare_exchange(val)); }
             }
         }
 
@@ -110,21 +112,14 @@ pub mod transfer {
             }
         }
 
-        pub fn create_receiving<V>(pointer_transfer:Transfer) -> (Self,V) {
-            let receive=ValueExchangeContainer::of_pointer(pointer_transfer.data).receive_content();
-            (Self::create_without_send(pointer_transfer),receive)
-        }
-
-        pub fn is_sendable(&self) -> bool {
-            match self.send_ref {
-                None => false,
-                Some(_) => true
-            }
+        pub fn create_receiving<V>(pointer_transfer: Transfer) -> (Self, V) {
+            let receive = ValueExchangeContainer::of_pointer(pointer_transfer.data).receive_content();
+            (Self::create_without_send(pointer_transfer), receive)
         }
 
         pub fn dispose_with(&mut self, val: Send) -> ! {
             self.send(val);
-             self.pointer_transfer.update(|t| unsafe {t.context.resume(0) });
+            self.pointer_transfer.update(|t| unsafe { t.context.resume(0) });
             panic!("resumed after dispose")
         }
 
@@ -140,11 +135,14 @@ pub mod transfer {
             }
         }
 
-        pub (super) fn suspend(&mut self) -> Receive {
+        pub(super) fn suspend(&mut self) -> Receive {
             let receive_container_pointer = self.receive_container.make_pointer();
             self.pointer_transfer.update(|t| unsafe { t.context.resume(receive_container_pointer) });
             if self.pointer_transfer.data != 0 {
-                self.send_ref=Some(self.send_ref.take().map(|mut s| {s.receive_ref(self.pointer_transfer.data);s}).unwrap_or_else(|| ExchangeContainerRef::of_pointer(self.pointer_transfer.data)));
+                self.send_ref = Some(self.send_ref.take().map(|mut s| {
+                    s.receive_ref(self.pointer_transfer.data);
+                    s
+                }).unwrap_or_else(|| ExchangeContainerRef::of_pointer(self.pointer_transfer.data)));
             } else {
                 self.send_ref = None;
             }
@@ -152,59 +150,9 @@ pub mod transfer {
         }
     }
 
-    pub struct ValueMoveTransfer {
-        raw_transfer: SelfUpdating<Transfer>
-    }
-
-    impl ValueMoveTransfer {
-        pub fn new(raw_transfer: Transfer) -> Self {
-            Self { raw_transfer: SelfUpdating::of(raw_transfer) }
-        }
-
-        pub fn move_transfer_in<V>(&self) -> V {
-            if self.raw_transfer.data == 0 {
-                panic!("tried to read nullpointer from transfer")
-            } else {
-                ValueExchangeContainer::<V>::of_pointer(self.raw_transfer.data).receive_content()
-            }
-        }
-
-        pub fn send_content<V>(&mut self, content: V) {
-            let exchange_container = ValueExchangeContainer::prepare_exchange(content);
-            self.raw_transfer.update(|t| unsafe { t.context.resume(exchange_container.make_pointer()) });
-        }
-    }
-
-    pub struct ReceivableValueTransfer(ValueMoveTransfer);
-
-    pub struct SuspendableValueTransfer(ValueMoveTransfer);
-
-    impl ReceivableValueTransfer {
-        pub fn init(raw_transfer: Transfer) -> Self {
-            Self(ValueMoveTransfer::new(raw_transfer))
-        }
-
-        pub fn receive<V>(self) -> (SuspendableValueTransfer, V) {
-            let received_content = self.0.move_transfer_in();
-            (SuspendableValueTransfer(self.0), received_content)
-        }
-    }
-
-    impl SuspendableValueTransfer {
-        pub fn init(raw_transfer: Transfer) -> Self {
-            Self(ValueMoveTransfer::new(raw_transfer))
-        }
-
-        pub fn suspend<V>(mut self, content: V) -> ReceivableValueTransfer {
-            self.0.send_content(content);
-            ReceivableValueTransfer(self.0)
-        }
-    }
-
     mod tests {
-        use crate::coroutines::transfer::{ValueExchangeContainer, ValueMoveTransfer, ReceivableValueTransfer, SuspendableValueTransfer};
+        use context::{Context, ContextFn, Transfer};
         use context::stack::ProtectedFixedSizeStack;
-        use context::{ContextFn, Transfer, Context};
 
         #[test]
         fn exchange_container_prepare() {
@@ -250,61 +198,18 @@ pub mod transfer {
         extern "C" fn init_test(_: Transfer) -> ! {
             panic!("")
         }
-
-        #[test]
-        fn value_transfer_init() {
-            let test_transfer = create_test_context(init_test, 2);
-            let value_transfer = ValueMoveTransfer::new(test_transfer);
-            assert_eq!(value_transfer.raw_transfer.data, 2)
-        }
-
-        #[test]
-        fn value_transfer_receive() {
-            let test_container = ValueExchangeContainer::prepare_exchange(2);
-            let test_transfer = create_test_context(init_test, test_container.make_pointer());
-            let value_transfer = ValueMoveTransfer::new(test_transfer);
-
-            assert_eq!(value_transfer.move_transfer_in::<i32>(), 2)
-        }
-
-        #[test]
-        fn value_transfer_send() {
-            extern "C" fn send_test(t: Transfer) -> ! {
-                assert_eq!(ValueExchangeContainer::<i32>::of_pointer(t.data).receive_content(), 2);
-                unsafe { t.context.resume(0); }
-                panic!()
-            }
-            let test_transfer = create_test_context(send_test, 0);
-            let mut value_transfer = ValueMoveTransfer::new(test_transfer);
-            value_transfer.send_content::<i32>(2);
-        }
-
-        #[test]
-        fn receive_suspendable_transfer_cycle() {
-            extern "C" fn send_test(t: Transfer) -> ! {
-                let receive_transfer = ReceivableValueTransfer::init(t);
-                let (suspend_transfer, rec) = receive_transfer.receive::<i32>();
-                assert_eq!(rec, 2);
-                suspend_transfer.suspend(3);
-                panic!()
-            }
-            let test_transfer = SuspendableValueTransfer::init(create_test_context(send_test, 0));
-            let receive_transfer = test_transfer.suspend(2);
-            let (_, rec) = receive_transfer.receive::<i32>();
-            assert_eq!(rec, 3)
-        }
     }
 }
 
 pub mod execution {
     use std::any::Any;
-    use crate::utils::SelfUpdating;
-    use crate::coroutines::transfer::{SuspendableValueTransfer, ReceivableValueTransfer, ValueMoveTransfer, ValueExchangeContainer, ExchangingTransfer};
     use std::marker::PhantomData;
-    use context::{Transfer, Context};
-    use std::panic::{catch_unwind, AssertUnwindSafe, resume_unwind};
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+
+    use context::{Context, Transfer};
     use context::stack::ProtectedFixedSizeStack;
 
+    use crate::coroutines::transfer::{ExchangingTransfer, ValueExchangeContainer};
 
     type PanicData = Box<dyn Any + Send + 'static>;
 
@@ -332,26 +237,25 @@ pub mod execution {
         Drop(),
     }
 
-
     pub struct CoroutineFactory<Yield, Return, Receive, F: Fn(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(F, PhantomData<(Yield, Return, Receive)>);
 
     impl<Yield, Return, Receive, F: Fn(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return> CoroutineFactory<Yield, Return, Receive, F> {
         pub fn new(handler: F) -> Self {
             Self(handler, PhantomData)
         }
-        pub fn build<'a>(self) -> Coroutine<'a,Yield, Return, Receive> {
+        pub fn build<'a>(self) -> Coroutine<'a, Yield, Return, Receive> {
             let stack = ProtectedFixedSizeStack::default();
-            let mut transfer=Transfer::new(unsafe { Context::new(&stack, run_co_context::<Yield, Return, Receive, F>) }, 0);
-            transfer=unsafe {transfer.context.resume(ValueExchangeContainer::prepare_exchange(self.0).make_pointer())};
-            let mut exchange_transfer=ExchangingTransfer::<ResumeType<Receive>,SuspenseType<Yield,Return>>::create_with_send(transfer);
-            let co_channel=InvocationChannel::<Yield,Return,Receive>(exchange_transfer);
-            let mut coroutine = Coroutine { state: InvocationState::Running(co_channel, stack) };
-            coroutine
+            let transfer = unsafe {
+                Transfer::new(Context::new(&stack, run_co_context::<Yield, Return, Receive, F>), 0).context.resume(ValueExchangeContainer::prepare_exchange(self.0).make_pointer())
+            };
+            Coroutine {
+                state: InvocationState::Running(InvocationChannel::<Yield, Return, Receive>(ExchangingTransfer::<ResumeType<Receive>, SuspenseType<Yield, Return>>::create_with_send(transfer)), stack)
+            }
         }
     }
 
-    pub struct Coroutine<'a,Yield, Return, Receive> {
-        state: InvocationState<'a,Yield, Return, Receive>
+    pub struct Coroutine<'a, Yield, Return, Receive> {
+        state: InvocationState<'a, Yield, Return, Receive>
     }
 
     #[derive(Debug)]
@@ -365,12 +269,12 @@ pub mod execution {
         Unwind,
     }
 
-    pub enum InvocationState<'a,Yield, Return, Receive> {
-        Running(InvocationChannel<'a,Yield,Return,Receive>,ProtectedFixedSizeStack),
+    pub enum InvocationState<'a, Yield, Return, Receive> {
+        Running(InvocationChannel<'a, Yield, Return, Receive>, ProtectedFixedSizeStack),
         Completed(CompleteVariant),
     }
 
-    impl<'a,Yield, Return, Receive> Drop for Coroutine<'a,Yield, Return, Receive> {
+    impl<'a, Yield, Return, Receive> Drop for Coroutine<'a, Yield, Return, Receive> {
         fn drop(&mut self) {
             match &mut self.state {
                 InvocationState::Running(channel, _) => {
@@ -381,10 +285,7 @@ pub mod execution {
         }
     }
 
-    impl<'a,Yield, Return, Receive> Coroutine<'a,Yield, Return, Receive> {
-        pub fn iter(&'a mut self) -> CoroutineIterator<Yield,Return,Receive> {
-            CoroutineIterator(self)
-        }
+    impl<'a, Yield, Return, Receive> Coroutine<'a, Yield, Return, Receive> {
         pub fn resume(&mut self, send: Receive) -> ResumeResult<Yield, Return> {
             let rec = match &mut self.state {
                 InvocationState::Running(channel, _) => channel.suspend(send),
@@ -423,78 +324,57 @@ pub mod execution {
         }
     }
 
-    pub struct CoroutineChannel<'a,Yield,Return,Receive>(ExchangingTransfer<'a,SuspenseType<Yield,Return>,ResumeType<Receive>>,bool);
-    pub struct InvocationChannel<'a,Yield,Return,Receive>(ExchangingTransfer<'a,ResumeType<Receive>,SuspenseType<Yield,Return>>);
+    pub struct CoroutineChannel<'a, Yield, Return, Receive>(ExchangingTransfer<'a, SuspenseType<Yield, Return>, ResumeType<Receive>>, bool);
+
+    pub struct InvocationChannel<'a, Yield, Return, Receive>(ExchangingTransfer<'a, ResumeType<Receive>, SuspenseType<Yield, Return>>);
 
 
-    impl<'a,Yield,Return,Receive> CoroutineChannel<'a,Yield,Return,Receive> {
-        pub fn suspend(&mut self,send:Yield) -> Receive {
-            let received=self.0.yield_with(SuspenseType::Yield(send));
+    impl<'a, Yield, Return, Receive> CoroutineChannel<'a, Yield, Return, Receive> {
+        pub fn suspend(&mut self, send: Yield) -> Receive {
+            let received = self.0.yield_with(SuspenseType::Yield(send));
             self.receive(received)
         }
 
-        fn receive(&mut self,r:ResumeType<Receive>) -> Receive {
-            match r  {
+        fn receive(&mut self, r: ResumeType<Receive>) -> Receive {
+            match r {
                 ResumeType::Yield(y) => y,
-                ResumeType::Drop() =>{
-                    self.1=true;
+                ResumeType::Drop() => {
+                    self.1 = true;
                     panic!()
                 }
             }
         }
-        fn complete_return(&mut self, ret:Return) -> ! {
-            self.0.dispose_with(SuspenseType::Complete(CompleteType::Return(ret)))
-        }
-
-        fn complete_unwind(&mut self, reason:UnwindReason) -> ! {
-            self.0.dispose_with(SuspenseType::Complete(CompleteType::Unwind(reason)))
-        }
     }
-    impl<'a,Yield,Return,Receive> InvocationChannel<'a,Yield,Return,Receive> {
-        pub fn suspend(&mut self, send: Receive) -> SuspenseType<Yield,Return> {
+
+    impl<'a, Yield, Return, Receive> InvocationChannel<'a, Yield, Return, Receive> {
+        pub fn suspend(&mut self, send: Receive) -> SuspenseType<Yield, Return> {
             self.0.yield_with(ResumeType::Yield(send))
         }
-        pub fn unwind(&mut self)  {
+        pub fn unwind(&mut self) {
             match self.0.yield_with(ResumeType::Drop()) {
                 SuspenseType::Complete(CompleteType::Unwind(_)) => (),
                 _ => panic!("Invalid coroutine unwind result")
             }
         }
     }
+
     extern "C" fn run_co_context<Yield, Return, Receive, F: Fn(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(raw_transfer: Transfer) -> ! {
-        let (mut exchange_transfer,routine_fn)=ExchangingTransfer::<SuspenseType<Yield,Return>,ResumeType<Receive>>::create_receiving::<F>(raw_transfer);
-        let initial=exchange_transfer.suspend();
-        let mut channel= CoroutineChannel(exchange_transfer,false);
+        let (mut exchange_transfer, routine_fn) = ExchangingTransfer::<SuspenseType<Yield, Return>, ResumeType<Receive>>::create_receiving::<F>(raw_transfer);
+        let initial = exchange_transfer.suspend();
+        let mut channel = CoroutineChannel(exchange_transfer, false);
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let initial=channel.receive(initial);
+            let initial = channel.receive(initial);
             routine_fn(&mut channel, initial)
         }));
         channel.0.dispose_with(SuspenseType::Complete(match result {
             Ok(ret) => CompleteType::Return(ret),
             Err(p) => CompleteType::Unwind(if channel.1 { UnwindReason::Drop } else { UnwindReason::Panic(p) })
         }))
-
-    }
-
-    pub struct CoroutineIterator<'a,Yield,Return,Receive>(&'a mut Coroutine<'a,Yield,Return,Receive>);
-    impl<'a,Yield,Return> Iterator for CoroutineIterator<'a,Yield,Return,()> {
-        type Item = Yield;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            match self.0.resume(()) {
-                ResumeResult::Return(r) => None,
-                ResumeResult::Yield(y) => Some(y)
-            }
-        }
     }
 
     mod tests {
-        use crate::coroutines::execution::{ ResumeType, SuspenseType};
+        use context::{Context, ContextFn, Transfer};
         use context::stack::ProtectedFixedSizeStack;
-        use context::{ContextFn, Transfer, Context};
-        use crate::coroutines::transfer::{SuspendableValueTransfer, ValueMoveTransfer};
-        use crate::utils::SelfUpdating;
-        use std::marker::PhantomData;
 
         static mut STATIC_TEST_STACK: Option<ProtectedFixedSizeStack> = None;
 
@@ -503,20 +383,6 @@ pub mod execution {
                 STATIC_TEST_STACK = Some(ProtectedFixedSizeStack::default())
             }
             unsafe { Transfer::new(Context::new(STATIC_TEST_STACK.as_ref().unwrap(), test_fn), start_data) }
-        }
-
-        extern "C" fn init_test(t: Transfer) -> ! {
-            let mut value_trans = ValueMoveTransfer::new(t);
-            value_trans.send_content::<SuspenseType<f64, i32>>(SuspenseType::Yield(0.4));
-            panic!("")
-        }
-
-        #[test]
-        fn context_channel_test() {
-            let raw_t = create_test_context(init_test, 0);
-            let mut channel = ContextChannel { send_transfer: SelfUpdating::of(SuspendableValueTransfer::init(raw_t)) };
-            let t = channel.suspend_context::<ResumeType<u32>, SuspenseType<f64, i32>>(ResumeType::Yield(1));
-            println!("{:?}", t)
         }
     }
 }

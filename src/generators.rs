@@ -1,7 +1,6 @@
-use crate::coroutines::execution::{Coroutine, CoroutineFactory, ResumeResult, CoroutineChannel};
-use std::mem::{swap, replace};
-use crate::coroutines::transfer::ValueExchangeContainer;
 use std::marker::PhantomData;
+
+use crate::coroutines::execution::{Coroutine, CoroutineChannel, CoroutineFactory, ResumeResult};
 
 pub struct ReceivingGeneratorFactory<Yield, Return, Receive, F>(F, PhantomData<(Yield, Return, Receive)>) where F: Fn(&mut GeneratorChannel<Yield, Return, Receive>, Receive) -> Return;
 
@@ -12,8 +11,6 @@ pub struct Generator<'a, Yield, Return, Receive>(GeneratorState<'a, Yield, Retur
 pub struct GeneratorChannel<'a, 'b: 'a, Yield, Return, Receive>(&'a mut CoroutineChannel<'b, Yield, Return, Receive>);
 
 pub struct GeneratorIterator<'a, Yield, Return, Receive, RF: Fn() -> Receive>(Generator<'a, Yield, Return, Receive>, RF);
-
-pub struct OuterIterator<'a, Yield>(&'a mut Generator<'a, Yield, (), ()>);
 
 enum GeneratorState<'a, Yield, Return, Receive> {
     RUNNING(Coroutine<'a, Yield, Return, Receive>),
@@ -91,7 +88,7 @@ impl<'a, Y: 'a, Ret: 'a> IntoIterator for Generator<'a,Y,Ret,()> {
     type Item = Y;
     type IntoIter = GeneratorIterator<'a, Y, Ret, (), fn()>;
 
-    fn into_iter(mut self) -> Self::IntoIter {
+    fn into_iter(self) -> Self::IntoIter {
         fn constant_identity() {}
         GeneratorIterator(self, constant_identity)
     }

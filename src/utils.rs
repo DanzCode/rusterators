@@ -11,19 +11,7 @@ impl<T> SelfUpdating<T> {
         self.0 = Some(op(self.0.take().unwrap()))
     }
 
-    pub fn returning_update<R,F: FnOnce(T) -> (T,R)>(&mut self, op: F) -> R {
-        let (next,res)=op(self.0.take().unwrap());
-        self.0 = Some(next);
-        res
-    }
 
-    pub fn consume<F:FnOnce(T)>(&mut self,op:F) -> ! {
-        op(self.0.take().unwrap());
-        todo!("require closure type to return '!'. Somewhat experimental though")
-    }
-    pub fn unwrap(self) -> T {
-        self.0.unwrap()
-    }
 }
 
 impl<T> From<T> for SelfUpdating<T> {
@@ -46,8 +34,6 @@ impl<T> DerefMut for SelfUpdating<T> {
 }
 
 mod tests {
-    use crate::utils::SelfUpdating;
-
     #[test]
     fn self_updating_init() {
         let self_updating=SelfUpdating::of(String::from("t"));
