@@ -1,24 +1,37 @@
-use crate::coroutines::execution::{CoroutineInvoker, CoroutineChannel};
-use crate::generators::ReceivingGenerator;
+use crate::coroutines::execution::{CoroutineFactory, CoroutineChannel};
+use crate::generators::{ReceivingGeneratorFactory, PureGeneratorFactory, Generator};
+
 
 mod coroutines;
 mod utils;
 mod generators;
 
 fn main() {
-    /*println!("{:?}",CoroutineInvoker::new(Box::new(|mut con:&mut CoroutineChannel<u32,u32,u32>,i| {
-        con.yield_with(i);
+     //let mut coroutine = CoroutineFactory::new(|mut con: &mut CoroutineChannel<u32, u32, u32>, i| {
+       //  con.suspend(i);
 
-        2
-    })).invoke(5).1);
-     */
-    let mut generator = ReceivingGenerator::new(|g, i| {
-        let i: i32 = g.yield_val(3);
+         //2
+     //}).build();
+    // let iter=coroutine.iter();
 
-        2
+    let mut generator = Generator::new(|chan| {
+        for t in 0..10 {
+             chan.yield_val(t);
+
+        }
+        chan.yield_all(3..5);
+        chan.yield_from(Generator::new(|b| {
+            b.yield_all((0..10).map(|x| x+34));
+            34
+        })).unwrap()
     });
-    for t in generator.build_iterator(|| 3) {
-        println!("{}",t)
+  // let iter=generator.iter1();
+    for i in &mut generator {
+        println!("{}",i)
     }
-    println!("{:?}",generator.generator_result())
+    println!("{} {:?}", generator.has_completed(), generator.result())
+}
+
+fn test(mut p0: Generator<i32, (), ()>) {
+
 }
