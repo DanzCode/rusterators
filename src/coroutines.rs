@@ -7,6 +7,7 @@ use context::stack::ProtectedFixedSizeStack;
 
 use crate::transfer::{ExchangingTransfer, ValueExchangeContainer};
 
+
 /// Type alias for the data a panic is carrying
 type PanicData = Box<dyn Any + Send + 'static>;
 

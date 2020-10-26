@@ -4,6 +4,9 @@ use context::Transfer;
 
 use crate::utils::SelfUpdating;
 
+/// Container technically quite simular to Option but with special purpose to hold a value that can be moved out exactly once (also semanticly)
+/// It is thought to move data between two callstacks by having a known mutable reference for this container where the value is passed to before execution control is switched
+/// Resuming execution can than move the value by returning it from yield/suspense call leaving the container at the "swap place" being emtpy variant
 pub enum ValueExchangeContainer<V> {
     Value(V),
     Empty,
@@ -22,28 +25,30 @@ impl<V> Default for ValueExchangeContainer<V> {
 }
 
 impl<V> ValueExchangeContainer<V> {
+    /// Wrap a value V in a ValueExchangeContainer
     pub fn prepare_exchange(val: V) -> Self {
         Self::Value(val)
     }
-
+    /// Queries whether containers value is still available or has already been moved
     pub fn has_content(&self) -> bool {
         match self {
             Self::Value(_) => true,
             Self::Empty => false
         }
     }
-
+    /// Move value out of container by returning the value and changing containers value to variant empty
+    /// Panics if container is already empty
     pub fn receive_content(&mut self) -> V {
         match take(self) {
             Self::Value(v) => v,
             Self::Empty => panic!("No content to receive")
         }
     }
-
+    /// Encodes a reference to this container as usize for transfer
     pub(super) fn make_pointer(&self) -> usize {
         unsafe { transmute::<*const Self, usize>(self as *const Self) }
     }
-
+    /// Reconstructs a mutable reference to a Container from a usize pointer
     fn of_pointer<'a>(p: usize) -> &'a mut Self {
         unsafe {
             &mut *transmute::<usize, *mut Self>(p)
@@ -51,24 +56,30 @@ impl<V> ValueExchangeContainer<V> {
     }
 }
 
+/// Decorator around a mutable Container ref providing trans-callcontext access
+/// While ValueExchangeContainer itself is kind of "immutable", i.e. should only used for one move and each value should be packed in a fresh instance
+/// the ref is thought to be mutable and reference may be updated
 pub struct ExchangeContainerRef<'a, V>(&'a mut ValueExchangeContainer<V>);
 
 impl<'a, V> ExchangeContainerRef<'a, V> {
+    /// create from mutable reference (e.g. by ValueExchangeContainer::of_pointer)
     pub fn new(container: &'a mut ValueExchangeContainer<V>) -> Self {
         Self(container)
     }
-
+    /// create from usize pointer
     pub fn of_pointer(p: usize) -> Self {
         Self::new(ValueExchangeContainer::of_pointer(p))
     }
 
+    /// Sends a value into the referenced Container
+    /// Either writes a new created container to the reference or panics if given container is not empty
     pub fn send_value(&mut self, val: V) {
         match self.0 {
             ValueExchangeContainer::Value(_) => panic!("tried to write to non-empty container"),
             ValueExchangeContainer::Empty => { *self.0 = ValueExchangeContainer::prepare_exchange(val); }
         }
     }
-
+    /// Updates the holded reference to new pointer
     pub fn receive_ref(&mut self, p: usize) {
         self.0 = match self.0 {
             ValueExchangeContainer::Empty => ValueExchangeContainer::of_pointer(p),
