@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+///
 pub struct SelfUpdating<T>(Option<T>);
 
 impl<T> SelfUpdating<T> {
@@ -10,8 +11,6 @@ impl<T> SelfUpdating<T> {
     pub fn update<F: FnOnce(T) -> T>(&mut self, op: F) {
         self.0 = Some(op(self.0.take().unwrap()))
     }
-
-
 }
 
 impl<T> From<T> for SelfUpdating<T> {
@@ -34,6 +33,8 @@ impl<T> DerefMut for SelfUpdating<T> {
 }
 
 mod tests {
+    use crate::utils::SelfUpdating;
+
     #[test]
     fn self_updating_init() {
         let self_updating=SelfUpdating::of(String::from("t"));
@@ -67,19 +68,5 @@ mod tests {
         assert_eq!(self_updating.unwrap(),"testtest");
     }
 
-    #[test]
-    #[should_panic]
-    fn self_updating_consume() {
-        let mut self_updating=SelfUpdating::of(String::from("test"));
-        self_updating.consume(|s| panic!(s));
-    }
-
-    #[test]
-    fn self_updating_perform_returning_update() {
-        let mut self_updating=SelfUpdating::of(String::from("test"));
-        let res=self_updating.returning_update(|s| (s.repeat(2),0.3));
-        assert_eq!(self_updating.unwrap(),"testtest");
-        assert_eq!(res,0.3);
-    }
 
 }

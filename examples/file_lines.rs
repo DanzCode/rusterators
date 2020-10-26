@@ -1,7 +1,7 @@
 use rusterators::generators::{Generator, PureGeneratorFactory, PureGenerator};
 
 
-fn create_line_generator<'a>(file_content:Result<String,String>) -> Generator<'a,String,Result<(),String>,()> {
+fn create_line_generator<'a>(file_content:Result<String,String>) -> PureGenerator<'a,String,Result<(),String>> {
     Generator::new(move |g| {
         match &file_content {
             Ok(content) => {
