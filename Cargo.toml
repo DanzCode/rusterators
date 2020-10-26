@@ -8,3 +8,9 @@ edition = "2018"
 
 [dependencies]
 context="2.1.0"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
