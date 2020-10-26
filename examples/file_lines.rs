@@ -5,14 +5,11 @@ fn create_line_generator<'a>(file_content:Result<String,String>) -> Generator<'a
     Generator::new(move |g| {
         match &file_content {
             Ok(content) => {
-                for l in content.lines() {
-
-                    g.yield_val(String::from(l.trim()))
-                }
+                g.yield_all(content.lines().map(|s| String::from(s.trim())));
                 Ok(())
             },
             Err(e) => {
-                Err(String::from("failure"))
+                Err(String::from("failed to read lines"))
             }
         }
     })
@@ -25,9 +22,17 @@ fn main() {
     3 line
     4 line"#)));
 
-    //g.resume(());
     for s in  &mut g {
         println!("{}",s)
     }
-    println!("d {:?} {:?}",g.result(),std::env::current_dir().unwrap());
+
+    println!("result: {:?}",g.result());
+
+
+    let mut g = create_line_generator(Err("".into()));
+    for s in &mut g {
+        println!("never read: {}", s);
+    }
+    println!("result: {:?}",g.result());
+
 }
