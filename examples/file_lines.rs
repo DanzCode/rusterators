@@ -1,4 +1,5 @@
-use rusterators::generators::{Generator, PureGenerator, PureGeneratorFactory};
+use rusterators::generators::{Generator, PureGenerator, PureGeneratorFactory, GeneratorChannel};
+
 
 fn create_line_generator<'a>(file_content:Result<String,String>) -> PureGenerator<'a,String,Result<(),String>> {
     Generator::new(move |g| {
@@ -14,7 +15,22 @@ fn create_line_generator<'a>(file_content:Result<String,String>) -> PureGenerato
     })
 }
 
+struct RefStr<'a>(&'a str);
+
 fn main() {
+    let mut gt=Generator::new_receiving(|mut gc,mut i:RefStr| {
+        let mut v=Vec::<&str>::new();
+        for _ in 0..2 {
+            v.push(i.0);
+            i=gc.yield_val(0);
+        }
+        v.iter().map(|s| s.len()).fold(0,|a,b| a+b)
+    });
+    for s in "a b c".split_whitespace() {
+        gt.resume(RefStr(s));
+    }
+    println!("{:?}",gt.result());
+
 
     let mut g=create_line_generator(Ok(String::from(r#"1 line
     2 line
