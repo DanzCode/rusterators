@@ -1,4 +1,4 @@
-use rusterators::generators::{Generator, PureGenerator, PureGeneratorFactory, GeneratorChannel};
+use rusterators::generators::{Generator, PureGenerator, GeneratorChannel};
 
 
 fn create_line_generator<'a>(file_content:Result<String,String>) -> PureGenerator<'a,String,Result<(),String>> {
