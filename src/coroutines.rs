@@ -129,6 +129,7 @@ impl<'a, Yield, Return, Receive> Drop for Coroutine<'a, Yield, Return, Receive> 
 }
 
 impl<'a, Yield, Return, Receive> Coroutine<'a, Yield, Return, Receive> {
+
     /// Sends a given value to the coroutine context and yields execution control to it
     /// Returns either a Yield or a Return ResumeResult after coroutine execution has been suspended
     /// Panics in case coroutine execution did panic or in case coroutine execution already has completed it
