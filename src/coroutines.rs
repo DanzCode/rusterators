@@ -7,7 +7,6 @@ use context::stack::ProtectedFixedSizeStack;
 
 use crate::transfer::{ExchangingTransfer, ValueExchangeContainer};
 
-
 /// Type alias for the data a panic is carrying
 type PanicData = Box<dyn Any + Send + 'static>;
 
@@ -197,8 +196,7 @@ impl<'a, Yield, Return, Receive> CoroutineChannel<'a, Yield, Return, Receive> {
 impl<'a, Yield, Return, Receive> InvocationChannel<'a, Yield, Return, Receive> {
     /// resumes execution of coroutine context yielding given value and waits for next suspend returning the encoded control flow type (Yield/Complete see [SuspenseType] and parameters)
     fn suspend(&mut self, send: Receive) -> SuspenseType<Yield, Return> {
-        let t = self.0.yield_with(ResumeType::Yield(send));
-        t
+        self.0.yield_with(ResumeType::Yield(send))
     }
     /// Causes coroutine execution context to unwind and checks whether consistent result is archieved
     fn unwind(&mut self) {
@@ -217,8 +215,7 @@ extern "C" fn run_co_context<Yield, Return, Receive, F: FnOnce(&mut CoroutineCha
     let mut channel = CoroutineChannel(exchange_transfer, false);
     let result = catch_unwind(AssertUnwindSafe(|| {
         let initial = channel.receive(initial);
-        let t = routine_fn(&mut channel, initial);
-        t
+        routine_fn(&mut channel, initial)
     }));
     channel.0.dispose_with(SuspenseType::Complete(match result {
         Ok(ret) => CompleteType::Return(ret),

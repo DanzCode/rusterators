@@ -1,5 +1,4 @@
-use rusterators::generators::{Generator, PureGeneratorFactory, PureGenerator};
-
+use rusterators::generators::{Generator, PureGenerator, PureGeneratorFactory};
 
 fn create_line_generator<'a>(file_content:Result<String,String>) -> PureGenerator<'a,String,Result<(),String>> {
     Generator::new(move |g| {
@@ -8,7 +7,7 @@ fn create_line_generator<'a>(file_content:Result<String,String>) -> PureGenerato
                 g.yield_all(content.lines().map(|s| String::from(s.trim())));
                 Ok(())
             },
-            Err(e) => {
+            Err(_) => {
                 Err(String::from("failed to read lines"))
             }
         }

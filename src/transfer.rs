@@ -1,4 +1,4 @@
-use std::mem::{transmute, replace, take};
+use std::mem::{transmute, take};
 
 use context::Transfer;
 
@@ -19,6 +19,8 @@ impl<V> From<V> for ValueExchangeContainer<V> {
 }
 
 impl<V> Default for ValueExchangeContainer<V> {
+    /// Defining Empty variant as default value
+    /// Needed to use std::mem::take
     fn default() -> Self {
         Self::Empty
     }
@@ -94,6 +96,12 @@ impl<'a, V> From<usize> for ExchangeContainerRef<'a, V> {
     }
 }
 
+/// Wraps the context libs raw transfer type which allows to exchange pointer adding the possibility to move input and output values between callstacks
+/// Therefore it has two additional attributes:
+/// - one field allocating a ValueExchangeContainer in which another context may transfer input values of type ReceiveMessage
+/// - one containing an optional ContainerRef to the receiving field of an ExchangingTransfer in the opposite context in which output values can be moved
+///
+/// The interface only offers complete control cycle methods (maybe send data -> switch context and wait for resume -> read received data) and encapsulates this behaviour on the lowest possible level
 pub struct ExchangingTransfer<'a, SendMessage, ReceiveMessage> {
     pointer_transfer: SelfUpdating<Transfer>,
     receive_container: ValueExchangeContainer<ReceiveMessage>,
@@ -101,15 +109,18 @@ pub struct ExchangingTransfer<'a, SendMessage, ReceiveMessage> {
 }
 
 impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
-    pub fn create_without_send(pointer_transfer: Transfer) -> Self {
+    /// Creates an ExchangingTransfer out of a raw transfer which pointer does not belong to another ExchangeContainer reference
+    /// In this case no output can be send on first suspense, since the destination is unknown and therefore only suspense call(which does not send) is valid
+    pub(super) fn create_without_send(pointer_transfer: Transfer) -> Self {
         Self {
             pointer_transfer: pointer_transfer.into(),
             receive_container: ValueExchangeContainer::default(),
             send_ref: None,
         }
     }
-
-    pub fn create_with_send(pointer_transfer: Transfer) -> Self {
+    /// Creates an ExchangingTransfer by a raw transfer already containing a valid ref to another ExchangeContainer
+    /// This instance will be able to send output on first suspense (and might have to, depending on higher level semantics)
+    pub(super) fn create_with_send(pointer_transfer: Transfer) -> Self {
         let current_data = pointer_transfer.data;
         Self {
             pointer_transfer: pointer_transfer.into(),
@@ -118,30 +129,37 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
         }
     }
 
-    pub fn create_receiving<V>(pointer_transfer: Transfer) -> (Self, V) {
+    /// Creates an ExchangingTransfer out of a raw transfer using the initial transfer pointer to resolve a different value and there creates an ExTansfer without sending capability on first suspense (see create_without_send)
+    pub(super) fn create_receiving<V>(pointer_transfer: Transfer) -> (Self, V) {
         let receive = ValueExchangeContainer::of_pointer(pointer_transfer.data).receive_content();
         (Self::create_without_send(pointer_transfer), receive)
     }
 
-    pub fn dispose_with(&mut self, val: Send) -> ! {
+    /// Sends given value [val] to connected callcontext and resumes it's execution expecting to never come back
+    /// Therefore a nullpointer is transferred for current Input ExchangeContainer reference (as no input should occur ever again)
+    /// Panics if this context is resumed ever again
+    pub(super) fn dispose_with(&mut self, val: Send) -> ! {
         self.send(val);
         self.pointer_transfer.update(|t| unsafe { t.context.resume(0) });
         panic!("resumed after dispose")
     }
 
-    pub fn yield_with(&mut self, val: Send) -> Receive {
+    /// Sends given value [val] to connected callcontext and resumes it's execution expecting that current callcontext is resumed later
+    /// Therefore a reference to the current input container field is send as pointer and - after resuming - expects this container to be filled and therefore returns it's content
+    /// Panics if no ref for output is known or input container is empty after resume
+    pub(super) fn yield_with(&mut self, val: Send) -> Receive {
         self.send(val);
-        let t = self.suspend();
-        t
+        self.suspend()
     }
 
+    /// Writes [val] to current ExchangeContainerRef or panics in case the ref is unknown
     fn send(&mut self, val: Send) {
         match &mut self.send_ref {
             Some(send_ref) => send_ref.send_value(val),
             None => panic!("invalid exchange state for sending")
         };
     }
-
+    /// like [yield_with] but without sending a value
     pub(super) fn suspend(&mut self) -> Receive {
         let receive_container_pointer = self.receive_container.make_pointer();
         self.pointer_transfer.update(|t| unsafe { t.context.resume(receive_container_pointer) });
@@ -153,15 +171,13 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
         } else {
             self.send_ref = None;
         }
-        let tmp = self.receive_container.receive_content();
-        tmp
-    }
+        self.receive_container.receive_content()    }
 }
 
 mod tests {
     use context::{Context, ContextFn, Transfer};
     use context::stack::ProtectedFixedSizeStack;
-    use crate::transfer::ValueExchangeContainer;
+    use super::ValueExchangeContainer;
 
     #[test]
     fn exchange_container_prepare() {
