@@ -7,6 +7,7 @@ use crate::utils::SelfUpdating;
 /// Container technically quite simular to Option but with special purpose to hold a value that can be moved out exactly once (also semanticly)
 /// It is thought to move data between two callstacks by having a known mutable reference for this container where the value is passed to before execution control is switched
 /// Resuming execution can than move the value by returning it from yield/suspense call leaving the container at the "swap place" being emtpy variant
+#[derive(Debug)]
 pub enum ValueExchangeContainer<V> {
     Value(V),
     Empty,
@@ -65,24 +66,24 @@ pub struct ExchangeContainerRef<'a, V>(&'a mut ValueExchangeContainer<V>);
 
 impl<'a, V> ExchangeContainerRef<'a, V> {
     /// create from mutable reference (e.g. by ValueExchangeContainer::of_pointer)
-    pub fn new(container: &'a mut ValueExchangeContainer<V>) -> Self {
+    fn new(container: &'a mut ValueExchangeContainer<V>) -> Self {
         Self(container)
     }
     /// create from usize pointer
-    pub fn of_pointer(p: usize) -> Self {
+    fn of_pointer(p: usize) -> Self {
         Self::new(ValueExchangeContainer::of_pointer(p))
     }
 
     /// Sends a value into the referenced Container
     /// Either writes a new created container to the reference or panics if given container is not empty
-    pub fn send_value(&mut self, val: V) {
+    fn send_value(&mut self, val: V) {
         match self.0 {
             ValueExchangeContainer::Value(_) => panic!("tried to write to non-empty container"),
             ValueExchangeContainer::Empty => { *self.0 = ValueExchangeContainer::prepare_exchange(val); }
         }
     }
     /// Updates the holded reference to new pointer
-    pub fn receive_ref(&mut self, p: usize) {
+    fn receive_ref(&mut self, p: usize) {
         self.0 = match self.0 {
             ValueExchangeContainer::Empty => ValueExchangeContainer::of_pointer(p),
             _ => panic!("tried to forget nonm-empty container ref")
@@ -141,7 +142,7 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
     pub(super) fn dispose_with(&mut self, val: Send) -> ! {
         self.send(val);
         self.pointer_transfer.update(|t| unsafe { t.context.resume(0) });
-        panic!("resumed after dispose")
+        panic!("resumed after dispose");
     }
 
     /// Sends given value [val] to connected callcontext and resumes it's execution expecting that current callcontext is resumed later
@@ -171,13 +172,16 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
         } else {
             self.send_ref = None;
         }
-        self.receive_container.receive_content()    }
+        self.receive_container.receive_content()
+    }
 }
 
 mod tests {
     use context::{Context, ContextFn, Transfer};
     use context::stack::ProtectedFixedSizeStack;
     use super::ValueExchangeContainer;
+    use crate::transfer::{ExchangeContainerRef, ExchangingTransfer};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     #[test]
     fn exchange_container_prepare() {
@@ -211,6 +215,44 @@ mod tests {
         assert_eq!(dup_container.receive_content(), 1)
     }
 
+    #[test]
+    fn exchange_ref_new() {
+        let mut container = ValueExchangeContainer::prepare_exchange(1);
+        let container_ref = ExchangeContainerRef::new(&mut container);
+        assert_eq!(container_ref.0.receive_content(), 1);
+        let mut container = ValueExchangeContainer::<i32>::Empty;
+        let container_ref = ExchangeContainerRef::new(&mut container);
+        assert_eq!(container_ref.0.has_content(), false);
+    }
+
+    #[test]
+    fn exchange_ref_of_pointer() {
+        let mut container = ValueExchangeContainer::prepare_exchange(1);
+        let container_ref = ExchangeContainerRef::<i32>::of_pointer(container.make_pointer());
+        assert_eq!(container_ref.0.receive_content(), 1);
+        let mut container = ValueExchangeContainer::<i32>::Empty;
+        let container_ref = ExchangeContainerRef::<i32>::of_pointer(container.make_pointer());
+        assert_eq!(container_ref.0.has_content(), false)
+    }
+
+    #[test]
+    fn exchange_ref_send() {
+        let mut container = ValueExchangeContainer::<i32>::Empty;
+        let mut container_ref = ExchangeContainerRef::new(&mut container);
+        container_ref.send_value(2);
+        assert_eq!(container.receive_content(), 2)
+    }
+
+    #[test]
+    fn exchange_ref_receive() {
+        let mut container = ValueExchangeContainer::<i32>::Empty;
+        let mut container_ref = ExchangeContainerRef::new(&mut container);
+        let alt_container = ValueExchangeContainer::prepare_exchange(3);
+        container_ref.receive_ref(alt_container.make_pointer());
+        assert_eq!(container_ref.0.receive_content(), 3)
+    }
+
+
     static mut STATIC_TEST_STACK: Option<ProtectedFixedSizeStack> = None;
 
     fn create_test_context(test_fn: ContextFn, start_data: usize) -> Transfer {
@@ -222,5 +264,73 @@ mod tests {
 
     extern "C" fn init_test(_: Transfer) -> ! {
         panic!("")
+    }
+
+    #[test]
+    fn transfer_create_without_send() {
+        let test_transfer = create_test_context(init_test, 0);
+        let transfer = ExchangingTransfer::<i32, i32>::create_without_send(test_transfer);
+        assert_eq!(transfer.pointer_transfer.data, 0);
+        assert!(!transfer.receive_container.has_content());
+        assert!(transfer.send_ref.is_none())
+    }
+
+    #[test]
+    fn transfer_create_with_send() {
+        let test_exchange = ValueExchangeContainer::prepare_exchange(5);
+        let test_transfer = create_test_context(init_test, test_exchange.make_pointer());
+        let transfer = ExchangingTransfer::<i32, i32>::create_with_send(test_transfer);
+        assert_eq!(transfer.pointer_transfer.data, test_exchange.make_pointer());
+        assert!(!transfer.receive_container.has_content());
+        assert_eq!(transfer.send_ref.unwrap().0.receive_content(), 5)
+    }
+
+    #[test]
+    fn transfer_create_receiving() {
+        let test_exchange = ValueExchangeContainer::prepare_exchange("test");
+        let test_transfer = create_test_context(init_test, test_exchange.make_pointer());
+        let (transfer, initial) = ExchangingTransfer::<i32, i32>::create_receiving::<&str>(test_transfer);
+        assert_eq!(transfer.pointer_transfer.data, test_exchange.make_pointer());
+        assert!(!transfer.receive_container.has_content());
+        assert_eq!(transfer.send_ref.is_none(), true);
+        assert_eq!(initial, "test")
+    }
+
+    #[test]
+    fn transfer_dispose_with() {
+        extern "C" fn dispose_test(t: Transfer) -> ! {
+            let mut trans = ExchangingTransfer::<i32, i32>::create_with_send(t);
+            trans.dispose_with(3)
+        }
+        let mut test_exchange = ValueExchangeContainer::<i32>::Empty;
+        unsafe { create_test_context(dispose_test, 0).context.resume(test_exchange.make_pointer()) };
+        assert_eq!(test_exchange.receive_content(), 3)
+    }
+
+    #[test]
+    fn transfer_yield_with() {
+        extern "C" fn dispose_test(t: Transfer) -> ! {
+            let mut trans = ExchangingTransfer::<i32, i32>::create_with_send(t);
+            trans.yield_with(2);
+            trans.dispose_with(0)
+        }
+        let mut test_exchange = ValueExchangeContainer::<i32>::Empty;
+        let t = unsafe { create_test_context(dispose_test, 0).context.resume(test_exchange.make_pointer()) };
+        assert_eq!(test_exchange.receive_content(), 2);
+        ExchangeContainerRef::of_pointer(t.data).send_value(1);
+        unsafe { t.context.resume(test_exchange.make_pointer()) };
+        assert_eq!(test_exchange.receive_content(), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_dispose_with_does_not_allow_resume() {
+        extern "C" fn dispose_test(t: Transfer) -> ! {
+            unsafe { t.context.resume(0) };
+            panic!()
+        }
+        let mut test_exchange = ValueExchangeContainer::<i32>::Empty;
+        let mut t = ExchangingTransfer::<i32, i32>::create_with_send(create_test_context(dispose_test, test_exchange.make_pointer()));
+        t.dispose_with(5);
     }
 }
