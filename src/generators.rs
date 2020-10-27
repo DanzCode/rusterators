@@ -16,6 +16,10 @@ pub struct ReceivingGeneratorFactory<Yield:'static, Return:'static, Receive, F>(
 // Factory for generator that does not receive meaningful value (i.e. Receive is parametrized to () always) and such offers some simpler methods
 pub struct PureGeneratorFactory<Yield:'static, Return:'static, F>(F, PhantomData<(Yield, Return)>) where F: FnOnce(&mut GeneratorChannel<Yield, Return, ()>) -> Return;
 
+pub type DynGenFn<Yield,Return,Receive> = dyn FnOnce(&mut GeneratorChannel<Yield,Return,Receive>,Receive)->Return;
+
+pub struct DynGeneratorFactory<Yield:'static, Return:'static, Receive>(Box<DynGenFn<Yield,Return,Receive>>, PhantomData<(Yield, Return,Receive)>);
+
 /// Decorator implementing generator semantics around a coroutine
 /// Main entrance point for Generator usage
 pub struct Generator<'a, Yield:'static, Return:'static, Receive:'a>(GeneratorState<'a, Yield, Return, Receive>);
@@ -68,17 +72,32 @@ impl<Yield:'static, Return:'static, Receive, F> IntoGenerator<Yield, Return, Rec
     }
 }
 
+impl<Yield:'static, Return:'static, Receive> DynGeneratorFactory<Yield, Return, Receive> {
+    fn new(handler: impl FnOnce(&mut GeneratorChannel<Yield,Return,Receive>,Receive)->Return + 'static) -> Self {
+        Self(Box::new(handler), PhantomData)
+    }
+}
+
+impl<Yield:'static, Return:'static, Receive> IntoGenerator<Yield, Return, Receive> for DynGeneratorFactory<Yield, Return, Receive> {
+    fn build<'a>(self) -> Generator<'a, Yield, Return, Receive> {
+        let gen_fn = self.0;
+        Generator(GeneratorState::RUNNING(CoroutineFactory::new(|con, i| {
+            let mut generator_channel = GeneratorChannel(con);
+            gen_fn(&mut generator_channel, i)
+        }).build()))
+    }
+}
 
 impl<'a, Y:'static, Ret:'static, Rec:'a> Generator<'a, Y, Ret, Rec> {
     /// Factory function creating a new generator with input capabilities
     /// The factoring is eager: a Generator with allocated call stack and context will be returned
-    pub fn new_receiving<F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret>(gen_fn:F) -> Generator<'a,Y,Ret,Rec>{
-        ReceivingGeneratorFactory::new(gen_fn).build()
+    pub fn new_receiving<F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static>(gen_fn:F) -> Generator<'a,Y,Ret,Rec>{
+        Self::new_receiving_lazy(gen_fn).build()
     }
 
     /// Like [new_receiving] but lazy: a GeneratorFactory holding the generator closure is returned and context is allocated after .build() is called
-    pub fn new_receiving_lazy< F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret>(gen_fn:F) -> ReceivingGeneratorFactory<Y,Ret,Rec,F>{
-        ReceivingGeneratorFactory::new(gen_fn)
+    pub fn new_receiving_lazy< F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static>(gen_fn:F) -> impl IntoGenerator<Y,Ret,Rec>{
+        DynGeneratorFactory::new(gen_fn)
     }
     /// Quries whether Generator call has already completed or may be resumed
     pub fn has_completed(&self) -> bool {
@@ -126,12 +145,13 @@ impl<'a, Y:'static, Ret:'static, Rec:'a> Generator<'a, Y, Ret, Rec> {
 impl<'a, Y:'static, Ret:'static> Generator<'a, Y, Ret, ()> {
     /// Create a generator which does not receive meaninful values and there may ignore it (closure does not receive initial argument as second parameter)
     /// Returns an initialized Generator with allocated callstack ready for iteration
-    pub fn new<F: FnOnce(&mut GeneratorChannel<Y, Ret, ()>) -> Ret>(gen_fn:F) -> Generator<'a,Y,Ret,()>{
-        PureGeneratorFactory::new(gen_fn).build()
+    pub fn new<F: FnOnce(&mut GeneratorChannel<Y, Ret, ()>) -> Ret + 'static>(gen_fn:F) -> Generator<'a,Y,Ret,()>{
+        Self::new_lazy(gen_fn).build()
+        //PureGeneratorFactory::new(gen_fn).build()
     }
     /// Same as [new] but returns a factory that need to be .build()
-    pub fn new_lazy< F: FnOnce(&mut GeneratorChannel<Y, Ret, ()>) -> Ret>(gen_fn:F) -> PureGeneratorFactory<Y,Ret,F>{
-        PureGeneratorFactory::new(gen_fn)
+    pub fn new_lazy< F: FnOnce(&mut GeneratorChannel<Y, Ret, ()>) -> Ret + 'static>(gen_fn:F) -> impl IntoGenerator<Y,Ret,()>{
+        DynGeneratorFactory::new(|chan,_| gen_fn(chan))
     }
 }
 

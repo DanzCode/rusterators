@@ -53,6 +53,8 @@ pub enum UnwindReason {
 /// Also it is quite a helpful method to get rid of closure template parameter(which otherwise gets quite annoying) before generator struct is formed
 pub struct CoroutineFactory<Yield:'static, Return:'static, Receive, F: FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(F, PhantomData<(Yield, Return, Receive)>);
 
+pub struct DynCoroutineFactory<Yield:'static, Return:'static, Receive>(Box<DynFn<Yield, Return, Receive>>, PhantomData<(Yield, Return, Receive)>);
+
 /// Represents the actual execution of a coroutine on invocation context side
 /// It encapsulates a state enum being either in Running state holding context/stack or in Completed state holding completion type
 /// It's methods offer the main public interface for invocation interaction
@@ -111,6 +113,25 @@ impl<Yield:'static, Return:'static, Receive, F> CoroutineFactory<Yield, Return, 
         let stack = ProtectedFixedSizeStack::default();
         let transfer = unsafe {
             Transfer::new(Context::new(&stack, run_co_context::<Yield, Return, Receive, F>), 0).context.resume(ValueExchangeContainer::prepare_exchange(self.0).make_pointer())
+        };
+        Coroutine(InvocationState::Running(InvocationChannel::<Yield, Return, Receive>(ExchangingTransfer::<ResumeType<Receive>, SuspenseType<Yield, Return>>::create_with_send(transfer)), stack))
+    }
+}
+
+impl<Yield:'static, Return:'static, Receive> DynCoroutineFactory<Yield, Return, Receive>
+    //where
+    //F:  {
+{
+    /// Constructs new factory out of coroutine closure
+    pub fn new(handler: impl FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return+'static) -> Self {
+        Self(Box::new(handler), PhantomData)
+    }
+    /// Build actual Coroutine by allocation stack, initing context information and transferring closure
+    /// Inits Coroutine structure in initial Running state ready to be invoked
+    pub fn build<'a>(self) -> Coroutine<'a, Yield, Return, Receive> {
+        let stack = ProtectedFixedSizeStack::default();
+        let transfer = unsafe {
+            Transfer::new(Context::new(&stack, run_dyn_co_context::<Yield, Return, Receive>), 0).context.resume(ValueExchangeContainer::prepare_exchange(self.0).make_pointer())
         };
         Coroutine(InvocationState::Running(InvocationChannel::<Yield, Return, Receive>(ExchangingTransfer::<ResumeType<Receive>, SuspenseType<Yield, Return>>::create_with_send(transfer)), stack))
     }
@@ -212,6 +233,23 @@ impl<'a, Yield:'static, Return:'static, Receive:'a> InvocationChannel<'a, Yield,
 /// This wraps baremetal Boost:context execution by receiving closure struct, initing communication channel and wrapping closure execution in order to have a clean stack unwind in any case
 extern "C" fn run_co_context<Yield:'static, Return:'static, Receive, F: FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return>(raw_transfer: Transfer) -> ! {
     let (mut exchange_transfer, routine_fn) = ExchangingTransfer::<SuspenseType<Yield, Return>, ResumeType<Receive>>::create_receiving::<F>(raw_transfer);
+    let initial = exchange_transfer.suspend();
+    let mut channel = CoroutineChannel(exchange_transfer, false);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let initial = channel.receive(initial);
+        routine_fn(&mut channel, initial)
+    }));
+    channel.0.dispose_with(SuspenseType::Complete(match result {
+        Ok(ret) => CompleteType::Return(ret),
+        Err(p) => CompleteType::Unwind(if channel.1 { UnwindReason::Drop } else { UnwindReason::Panic(p) })
+    }))
+}
+
+type DynFn<Yield,Return,Receive>=dyn FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return;
+/// "Bootstrap" function for coroutine context
+/// This wraps baremetal Boost:context execution by receiving closure struct, initing communication channel and wrapping closure execution in order to have a clean stack unwind in any case
+extern "C" fn run_dyn_co_context<Yield:'static, Return:'static, Receive>(raw_transfer: Transfer) -> ! {
+    let (mut exchange_transfer, routine_fn) = ExchangingTransfer::<SuspenseType<Yield, Return>, ResumeType<Receive>>::create_receiving::<Box<DynFn<Yield,Return,Receive>>>(raw_transfer);
     let initial = exchange_transfer.suspend();
     let mut channel = CoroutineChannel(exchange_transfer, false);
     let result = catch_unwind(AssertUnwindSafe(|| {
