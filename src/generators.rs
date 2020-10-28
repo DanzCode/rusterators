@@ -5,15 +5,40 @@ use crate::coroutines::{Coroutine, CoroutineChannel, CoroutineFactory, ResumeRes
 /// Trait implemented by all GeneratorFactorys
 /// Designed to be implemented by Generator also copying IntoIterator semantics, but that turned out to be a problem
 /// TODO maybe it is somehow possible to implement IntoGenerator for Generator
-pub trait IntoGenerator<Yield: 'static, Return: 'static, Receive> {
+pub trait IntoGenerator {
+    type GenYield:'static;
+    type GenReturn:'static;
+    type GenReceive;
     /// Returning a generator fulfilling implementors semantics with init callstack ready to be invoked/resumed
-    fn build<'a>(self) -> Generator<'a, Yield, Return, Receive> where Receive: 'a;
+    fn build<'a>(self) -> Generator<'a, Self::GenYield,Self::GenReturn, Self::GenReceive> where Self::GenReceive:'a;
 }
 
 pub type GenFn<Yield, Return, Receive> = dyn FnOnce(&mut GeneratorChannel<Yield, Return, Receive>, Receive) -> Return;
 
+/// Factory object wrapping generator closure for later instantiation (lazy init)
 pub struct GeneratorFactory<Yield: 'static, Return: 'static, Receive>(Box<GenFn<Yield, Return, Receive>>, PhantomData<(Yield, Return, Receive)>);
 
+pub trait PlainGenerator {
+    type Yield;
+    type Receive;
+    /// Resumes the current execution of the generator by sending [val]
+    /// Either returns Some<Y> if generators yields another value or None if generator completes before return
+    /// After this method returned None once it may not be called another time or it will panic
+    /// Use [has_completed] to determine execution state
+    fn resume(&mut self, receive:Self::Receive)->Option<Self::Yield>;
+    /// Quries whether Generator call has already completed or may be resumed
+    fn has_completed(&self) -> bool;
+}
+
+pub trait ReturningGenerator:PlainGenerator {
+    type Return;
+
+    /// Converts this generator into it's result destructively
+/// Caution: The Result determines whether generator closure has returned (Ok(Ret)) or generator callstack has been unwinded before return for some reason (Err())
+/// If generator closure itself returns a Result this call Returns Result<Result<_,_>,()>
+/// Panics if generator has not completed yet(thus no result exists)
+     fn result(self) -> Result<Self::Return, ()>;
+}
 /// Decorator implementing generator semantics around a coroutine
 /// Main entrance point for Generator usage
 pub struct Generator<'a, Yield: 'static, Return: 'static, Receive: 'a>(GeneratorState<'a, Yield, Return, Receive>);
@@ -43,7 +68,11 @@ impl<Yield: 'static, Return: 'static, Receive> GeneratorFactory<Yield, Return, R
     }
 }
 
-impl<Yield: 'static, Return: 'static, Receive> IntoGenerator<Yield, Return, Receive> for GeneratorFactory<Yield, Return, Receive> {
+impl<Yield: 'static, Return: 'static, Receive> IntoGenerator for GeneratorFactory<Yield, Return, Receive> {
+    type GenYield = Yield;
+    type GenReturn =Return;
+    type GenReceive = Receive;
+
     fn build<'a>(self) -> Generator<'a, Yield, Return, Receive> where Receive:'a {
         let gen_fn = self.0;
         Generator(GeneratorState::RUNNING(CoroutineFactory::new(|con, i| {
@@ -53,34 +82,9 @@ impl<Yield: 'static, Return: 'static, Receive> IntoGenerator<Yield, Return, Rece
     }
 }
 
-impl<'a, Y: 'static, Ret: 'static, Rec: 'a> Generator<'a, Y, Ret, Rec> {
-    /// Factory function creating a new generator with input capabilities
-    /// The factoring is eager: a Generator with allocated call stack and context will be returned
-    pub fn new_receiving<F>(gen_fn: F) -> Generator<'a, Y, Ret, Rec>
-        where F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static {
-        Self::new_receiving_lazy(gen_fn).build()
-    }
-
-    /// Like [new_receiving] but lazy: a GeneratorFactory holding the generator closure is returned and context is allocated after .build() is called
-    pub fn new_receiving_lazy<F>(gen_fn: F) -> impl IntoGenerator<Y, Ret, Rec>
-        where F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static {
-        GeneratorFactory::new(gen_fn)
-    }
-    /// Quries whether Generator call has already completed or may be resumed
-    pub fn has_completed(&self) -> bool {
-        match &self.0 {
-            GeneratorState::COMPLETED(_) => true,
-            GeneratorState::RUNNING(co) => {
-                co.is_completed()
-            }
-        }
-    }
-
-    /// Converts this generator into it's result destructively
-    /// Caution: The Result determines whether generator closure has returned (Ok(Ret)) or generator callstack has been unwinded before return for some reason (Err())
-    /// If generator closure itself returns a Result this call Returns Result<Result<_,_>,()>
-    /// Panics if generator has not completed yet(thus no result exists)
-    pub fn result(self) -> Result<Ret, ()> {
+impl<'a, Y: 'static, Ret: 'static, Rec: 'a> ReturningGenerator for Generator<'a, Y, Ret, Rec> {
+    type Return=Ret;
+    fn result(self) -> Result<Self::Return, ()> {
         if self.has_completed() {
             match self.0 {
                 GeneratorState::COMPLETED(r) => Ok(r),
@@ -90,11 +94,12 @@ impl<'a, Y: 'static, Ret: 'static, Rec: 'a> Generator<'a, Y, Ret, Rec> {
             panic!("generator hasn't completed yet")
         }
     }
-    /// Resumes the current execution of the generator by sending [val]
-    /// Either returns Some<Y> if generators yields another value or None if generator completes before return
-    /// After this method returned None once it may not be called another time or it will panic
-    /// Use [has_completed] to determine execution state
-    pub fn resume(&mut self, val: Rec) -> Option<Y> {
+}
+impl<'a, Y: 'static, Ret: 'static, Rec: 'a> PlainGenerator for Generator<'a, Y, Ret, Rec> {
+    type Yield = Y;
+    type Receive = Rec;
+
+    fn resume(&mut self, val: Self::Receive) -> Option<Self::Yield> {
         let next = match &mut self.0 {
             GeneratorState::RUNNING(co) => co.resume(val),
             GeneratorState::COMPLETED(_) => panic!("invalid generator state")
@@ -107,6 +112,30 @@ impl<'a, Y: 'static, Ret: 'static, Rec: 'a> Generator<'a, Y, Ret, Rec> {
             ResumeResult::Yield(v) => Some(v)
         }
     }
+
+    fn has_completed(&self) -> bool {
+        match &self.0 {
+            GeneratorState::COMPLETED(_) => true,
+            GeneratorState::RUNNING(co) => {
+                co.is_completed()
+            }
+        }
+    }
+}
+
+impl<'a, Y: 'static, Ret: 'static, Rec: 'a> Generator<'a, Y, Ret, Rec> {
+    /// Factory function creating a new generator with input capabilities
+    /// The factoring is eager: a Generator with allocated call stack and context will be returned
+    pub fn new_receiving<F>(gen_fn: F) -> Generator<'a, Y, Ret, Rec>
+        where F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static {
+        Self::new_receiving_lazy(gen_fn).build()
+    }
+
+    /// Like [new_receiving] but lazy: a GeneratorFactory holding the generator closure is returned and context is allocated after .build() is called
+    pub fn new_receiving_lazy<F>(gen_fn: F) -> impl IntoGenerator<GenYield=Y, GenReturn=Ret, GenReceive=Rec>
+        where F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static {
+        GeneratorFactory::new(gen_fn)
+    }
 }
 
 impl<'a, Y: 'static, Ret: 'static> Generator<'a, Y, Ret, ()> {
@@ -118,8 +147,8 @@ impl<'a, Y: 'static, Ret: 'static> Generator<'a, Y, Ret, ()> {
         //PureGeneratorFactory::new(gen_fn).build()
     }
     /// Same as [new] but returns a factory that need to be .build()
-    pub fn new_lazy<F>(gen_fn: F) -> impl IntoGenerator<Y, Ret, ()>
-        where F: FnOnce(&mut GeneratorChannel<Y, Ret, ()>) -> Ret + 'static{
+    pub fn new_lazy<F>(gen_fn: F) -> impl IntoGenerator<GenYield=Y, GenReturn=Ret, GenReceive=()>
+        where F: FnOnce(&mut GeneratorChannel<Y, Ret, ()>) -> Ret + 'static {
         GeneratorFactory::new(|chan, _| gen_fn(chan))
     }
 }

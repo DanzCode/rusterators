@@ -1,5 +1,5 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use rusterators::generators::Generator;
+use rusterators::generators::{Generator, ReturningGenerator};
 fn main() {
     let mut g=Generator::new(|g| {
         g.yield_val(0);
