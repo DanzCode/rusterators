@@ -1,6 +1,6 @@
 extern crate rusterators;
 use rusterators::generators::Generator;
-use rusterators::generators::IntoGenerator;
+use rusterators::generators::GeneratorFactory;
 
 fn main() {
     for f in Generator::new(|g| {

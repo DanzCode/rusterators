@@ -1,22 +1,23 @@
 use std::marker::PhantomData;
 
-use crate::coroutines::{Coroutine, CoroutineChannel, CoroutineFactory, ResumeResult, DynCoroutineFactory};
+use crate::coroutines::{Coroutine, CoroutineChannel, ResumeResult, CoroutineFactory};
 
 /// Trait implemented by all GeneratorFactorys
 /// Designed to be implemented by Generator also copying IntoIterator semantics, but that turned out to be a problem
 /// TODO maybe it is somehow possible to implement IntoGenerator for Generator
-pub trait IntoGenerator {
+pub trait GeneratorFactory {
     type GenYield:'static;
     type GenReturn:'static;
     type GenReceive;
+   // type IntoGenerator:PlainGenerator<Yield=Self::GenYield,Receive=Self::GenReceive>;
     /// Returning a generator fulfilling implementors semantics with init callstack ready to be invoked/resumed
-    fn build<'a>(self) -> Generator<'a, Self::GenYield,Self::GenReturn, Self::GenReceive> where Self::GenReceive:'a;
+    fn build<'a>(self) -> Generator<'a,Self::GenYield,Self::GenReturn,Self::GenReceive> where Self::GenReceive:'a;//Self::IntoGenerator;//Generator<Self::GenYield,Self::GenReturn, Self::GenReceive>;
 }
 
 pub type GenFn<Yield, Return, Receive> = dyn FnOnce(&mut GeneratorChannel<Yield, Return, Receive>, Receive) -> Return;
 
 /// Factory object wrapping generator closure for later instantiation (lazy init)
-pub struct GeneratorFactory<Yield: 'static, Return: 'static, Receive>(Box<GenFn<Yield, Return, Receive>>, PhantomData<(Yield, Return, Receive)>);
+pub struct DefaultGeneratorFactory<Yield: 'static, Return: 'static, Receive>(Box<GenFn<Yield, Return, Receive>>, PhantomData<(Yield, Return, Receive)>);
 
 pub trait PlainGenerator {
     type Yield;
@@ -62,18 +63,18 @@ enum GeneratorState<'a, Yield: 'static, Return: 'static, Receive: 'a> {
     COMPLETED(Return),
 }
 
-impl<Yield: 'static, Return: 'static, Receive> GeneratorFactory<Yield, Return, Receive> {
+impl<Yield: 'static, Return: 'static, Receive> DefaultGeneratorFactory<Yield, Return, Receive> {
     fn new(handler: impl FnOnce(&mut GeneratorChannel<Yield, Return, Receive>, Receive) -> Return + 'static) -> Self {
         Self(Box::new(handler), PhantomData)
     }
 }
 
-impl<Yield: 'static, Return: 'static, Receive> IntoGenerator for GeneratorFactory<Yield, Return, Receive> {
+impl<Yield: 'static, Return: 'static, Receive> GeneratorFactory for DefaultGeneratorFactory<Yield, Return, Receive> {
     type GenYield = Yield;
     type GenReturn =Return;
     type GenReceive = Receive;
 
-    fn build<'a>(self) -> Generator<'a, Yield, Return, Receive> where Receive:'a {
+    fn build<'a>(self) ->Generator<'a,Self::GenYield,Self::GenReturn,Self::GenReceive> where Self::GenReceive:'a{
         let gen_fn = self.0;
         Generator(GeneratorState::RUNNING(CoroutineFactory::new(|con, i| {
             let mut generator_channel = GeneratorChannel(con);
@@ -81,6 +82,7 @@ impl<Yield: 'static, Return: 'static, Receive> IntoGenerator for GeneratorFactor
         }).build()))
     }
 }
+
 
 impl<'a, Y: 'static, Ret: 'static, Rec: 'a> ReturningGenerator for Generator<'a, Y, Ret, Rec> {
     type Return=Ret;
@@ -132,9 +134,9 @@ impl<'a, Y: 'static, Ret: 'static, Rec: 'a> Generator<'a, Y, Ret, Rec> {
     }
 
     /// Like [new_receiving] but lazy: a GeneratorFactory holding the generator closure is returned and context is allocated after .build() is called
-    pub fn new_receiving_lazy<F>(gen_fn: F) -> impl IntoGenerator<GenYield=Y, GenReturn=Ret, GenReceive=Rec>
+    pub fn new_receiving_lazy<F>(gen_fn: F) -> impl GeneratorFactory<GenYield=Y, GenReturn=Ret, GenReceive=Rec>
         where F: FnOnce(&mut GeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static {
-        GeneratorFactory::new(gen_fn)
+        DefaultGeneratorFactory::new(gen_fn)
     }
 }
 
@@ -147,9 +149,9 @@ impl<'a, Y: 'static, Ret: 'static> Generator<'a, Y, Ret, ()> {
         //PureGeneratorFactory::new(gen_fn).build()
     }
     /// Same as [new] but returns a factory that need to be .build()
-    pub fn new_lazy<F>(gen_fn: F) -> impl IntoGenerator<GenYield=Y, GenReturn=Ret, GenReceive=()>
+    pub fn new_lazy<F>(gen_fn: F) -> impl GeneratorFactory<GenYield=Y, GenReturn=Ret, GenReceive=()>
         where F: FnOnce(&mut GeneratorChannel<Y, Ret, ()>) -> Ret + 'static {
-        GeneratorFactory::new(|chan, _| gen_fn(chan))
+        DefaultGeneratorFactory::new(|chan, _| gen_fn(chan))
     }
 }
 

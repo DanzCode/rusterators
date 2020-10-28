@@ -1,6 +1,6 @@
-use rusterators::coroutines::{Coroutine, CoroutineFactory, DynCoroutineFactory};
+use rusterators::coroutines::{Coroutine, CoroutineFactory};
 fn main() {
-    let coroutine=DynCoroutineFactory::new(|mut chan,mut i:i32| {
+    let coroutine= CoroutineFactory::new(|mut chan, mut i:i32| {
         let mut counter=0;
         while i!=10 {
             counter+=1;

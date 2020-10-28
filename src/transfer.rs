@@ -1,14 +1,35 @@
 use std::mem::{transmute, take};
 
-use context::Transfer;
+use context::{Transfer, Context, ContextFn};
 
 use crate::utils::SelfUpdating;
+use context::stack::{ProtectedFixedSizeStack};
+
+pub struct StackFactory(Box<dyn FnOnce()->ProtectedFixedSizeStack>);
+
+impl StackFactory {
+    fn new<F:FnOnce()->ProtectedFixedSizeStack+'static>(builder:F) -> Self {
+        Self(Box::new(builder))
+    }
+
+    pub fn default_stack() -> Self {
+        Self::new(|| ProtectedFixedSizeStack::default())
+    }
+
+    pub fn of_size(stack_size:usize) -> Self {
+        Self::new(move || ProtectedFixedSizeStack::new(stack_size).unwrap())
+    }
+
+    pub fn build(self) -> ProtectedFixedSizeStack {
+        (self.0)()
+    }
+}
 
 /// Container technically quite simular to Option but with special purpose to hold a value that can be moved out exactly once (also semanticly)
 /// It is thought to move data between two callstacks by having a known mutable reference for this container where the value is passed to before execution control is switched
 /// Resuming execution can than move the value by returning it from yield/suspense call leaving the container at the "swap place" being emtpy variant
 #[derive(Debug)]
-pub enum ValueExchangeContainer<V> {
+enum ValueExchangeContainer<V> {
     Value(V),
     Empty,
 }
@@ -29,11 +50,12 @@ impl<V> Default for ValueExchangeContainer<V> {
 
 impl<V> ValueExchangeContainer<V> {
     /// Wrap a value V in a ValueExchangeContainer
-    pub fn prepare_exchange(val: V) -> Self {
+    fn prepare_exchange(val: V) -> Self {
         Self::Value(val)
     }
+
     /// Queries whether containers value is still available or has already been moved
-    pub fn has_content(&self) -> bool {
+    fn has_content(&self) -> bool {
         match self {
             Self::Value(_) => true,
             Self::Empty => false
@@ -41,14 +63,14 @@ impl<V> ValueExchangeContainer<V> {
     }
     /// Move value out of container by returning the value and changing containers value to variant empty
     /// Panics if container is already empty
-    pub fn receive_content(&mut self) -> V {
+    fn receive_content(&mut self) -> V {
         match take(self) {
             Self::Value(v) => v,
             Self::Empty => panic!("No content to receive")
         }
     }
     /// Encodes a reference to this container as usize for transfer
-    pub(super) fn make_pointer(&self) -> usize {
+    fn make_pointer(&self) -> usize {
         unsafe { transmute::<*const Self, usize>(self as *const Self) }
     }
     /// Reconstructs a mutable reference to a Container from a usize pointer
@@ -62,7 +84,7 @@ impl<V> ValueExchangeContainer<V> {
 /// Decorator around a mutable Container ref providing trans-callcontext access
 /// While ValueExchangeContainer itself is kind of "immutable", i.e. should only used for one move and each value should be packed in a fresh instance
 /// the ref is thought to be mutable and reference may be updated
-pub struct ExchangeContainerRef<'a, V>(&'a mut ValueExchangeContainer<V>);
+struct ExchangeContainerRef<'a, V>(&'a mut ValueExchangeContainer<V>);
 
 impl<'a, V> ExchangeContainerRef<'a, V> {
     /// create from mutable reference (e.g. by ValueExchangeContainer::of_pointer)
@@ -134,6 +156,18 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
     pub(super) fn create_receiving<V>(pointer_transfer: Transfer) -> (Self, V) {
         let receive = ValueExchangeContainer::of_pointer(pointer_transfer.data).receive_content();
         (Self::create_without_send(pointer_transfer), receive)
+    }
+
+    /// Creates an ExchangingTransfer by creating a raw transfer first on top of a stack builded by given [stack_factory] pointing to  [context_fn]
+    /// Transfers [initial] using pointer to ValueExchangeContainer and suspends execution control to created context
+    /// Returns tupel of created ExchangingTransfer and builded stack after resume
+    pub(super) fn init_context_sending<V>(stack_factory:StackFactory,context_fn:ContextFn,initial:V) -> (Self, ProtectedFixedSizeStack) {
+        let stack=stack_factory.build();
+        let transfer=unsafe {
+            Transfer::new(Context::new(&stack, context_fn), 0)
+                .context.resume(ValueExchangeContainer::prepare_exchange(initial).make_pointer())
+        };
+        (Self::create_with_send(transfer), stack)
     }
 
     /// Sends given value [val] to connected callcontext and resumes it's execution expecting to never come back
@@ -227,10 +261,10 @@ mod tests {
 
     #[test]
     fn exchange_ref_of_pointer() {
-        let mut container = ValueExchangeContainer::prepare_exchange(1);
+        let container = ValueExchangeContainer::prepare_exchange(1);
         let container_ref = ExchangeContainerRef::<i32>::of_pointer(container.make_pointer());
         assert_eq!(container_ref.0.receive_content(), 1);
-        let mut container = ValueExchangeContainer::<i32>::Empty;
+        let container = ValueExchangeContainer::<i32>::Empty;
         let container_ref = ExchangeContainerRef::<i32>::of_pointer(container.make_pointer());
         assert_eq!(container_ref.0.has_content(), false)
     }
@@ -329,7 +363,7 @@ mod tests {
             unsafe { t.context.resume(0) };
             panic!()
         }
-        let mut test_exchange = ValueExchangeContainer::<i32>::Empty;
+        let test_exchange = ValueExchangeContainer::<i32>::Empty;
         let mut t = ExchangingTransfer::<i32, i32>::create_with_send(create_test_context(dispose_test, test_exchange.make_pointer()));
         t.dispose_with(5);
     }
