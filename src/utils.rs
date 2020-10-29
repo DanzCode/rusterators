@@ -36,6 +36,7 @@ impl<T> SelfUpdating<T> {
         self.0 = Some(op(self.0.take().unwrap()))
     }
 
+    #[allow(dead_code)]
     pub fn unwrap(mut self) -> T {self.0.take().unwrap()}
 }
 
@@ -58,6 +59,7 @@ impl<T> DerefMut for SelfUpdating<T> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use crate::utils::SelfUpdating;
 

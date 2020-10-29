@@ -1,20 +1,40 @@
-use std::marker::PhantomData;
-
 use crate::coroutines::{Coroutine, CoroutineChannel, ResumeResult};
-use std::convert::TryInto;
 
 /// General Closure signature that is used by full fletched Generator
-pub type GenFn<Yield, Return, Receive> = dyn FnOnce(&mut BoostedGeneratorChannel<Yield, Return, Receive>, Receive) -> Return;
+pub type BoostedGenFn<Yield, Return, Receive> = dyn FnOnce(&mut BoostedGeneratorChannel<Yield, Return, Receive>, Receive) -> Return;
 
+/// Base Generator trait representing the most fundamental generator functionality:
+/// - types Yield and Receive telling which data generator emits and accepts
+/// - methods resume which resumes execution
+/// - method has_completed which queries state
 pub trait Generator<'a>{
     type Yield:'static;
     type Receive: 'a;
-
+    /// Determines whether this generators and its coroutine context have completed or are still resumeable
     fn has_completed(&self) -> bool;
-
+    /// Resumes or starts execution of this generators callstack sending [send] to it
+    /// Returns Option containing a value of type Yield in case generator yields a value and suspends or None of generator completes
+    /// This method may not be called after it returned None once or behaviour is undefined(most likely this would cause a panic)
+    /// [has_completed] will return true iif resume has returned None once
     fn resume(&mut self,send:Self::Receive) -> Option<Self::Yield>;
 }
 
+/// A ResultingGenerator is a [Generator] with the additional ability to return a value indepent of the yielded data
+/// Can be useful to return summarize of error states etc.
+pub trait ResultingGenerator<'a>:Generator<'a> {
+    type Return:'static;
+    /// Converts Generator into its resulting value whereby,
+    /// Ok(r) means the generator has successfully generated a return value(which might be another Result as well)
+    /// Err(()) means that generator stack has been unwinded before it's execution completed (most likely due to a panic)
+    /// This methods panics if generator has not completed yet, i.e. [has_completed] returns false
+    fn result(self) -> Result<Self::Return,()>;
+}
+/// Marker trait stating that Generator does not receive meaningful values. Thus it can be iterated over (with resume(()) without further information.
+/// This was designed to genericly implement iterator (impl<G:IgnorantGenerator> Iterator for G like), but it turned out to be complicated. Such this trait is somewhat useless but kept for later ideas
+/// TODO find better design approach
+pub trait IgnorantGenerator<'a,Yield:'static>:Generator<'a,Yield=Yield,Receive=()>+Iterator<Item=Yield> {}
+
+/// [GeneratorChannel] is the interface that connects the generating closure with the invocation context and provides a method to yield a value as well was utility methods handling iterator related stuff
 pub trait GeneratorChannel<'a> {
     type Yield:'static;
     type Receive:'a;
@@ -41,28 +61,22 @@ pub trait GeneratorChannel<'a> {
     }
 }
 
-pub trait ResultingGenerator<'a>:Generator<'a> {
-    type Return:'static;
+/// A simple Generator implementation only supporting non-receiving, ignorant generators by building a thin wrapper around Coroutines rearranging the user interface more or less
+/// Not that flexible but straight forward to use
+pub struct BoringGenerator<'a, Yield: 'static>(Coroutine<'a, Yield, (), ()>);
 
-    fn result(self) -> Result<Self::Return,()>;
-}
+/// Channel implementation for [BoringGeneratorChannel]
+/// TODO check whether generating closure may receive something like "impl GeneratorChannel" to be a) more generic and b) makes it possible to hide concrete structs
+pub struct BoringGeneratorChannel<'a, 'b: 'a, Yield: 'static>(&'a mut CoroutineChannel<'b, Yield, (), ()>);
 
-pub trait IgnorantGenerator<'a,Yield:'static>:Generator<'a,Yield=Yield,Receive=()>+Iterator<Item=Yield> {
-}
-
-pub struct MonoGenerator<'a, Yield: 'static>(Coroutine<'a, Yield, (), ()>);
-
-pub struct MonoGeneratorChannel<'a, 'b: 'a, Yield: 'static>(&'a mut CoroutineChannel<'b, Yield, (), ()>);
-
-/// Decorator implementing generator semantics around a coroutine
-/// Main entrance point for Generator usage
+/// [Generator] implementation providing full-fledged resulting generators which might be ignorant but can also receive values
 pub struct BoostedGenerator<'a, Yield: 'static, Return: 'static, Receive: 'a>(BoostedGeneratorState<'a, Yield, Return, Receive>);
 
 /// Wrapper around CoroutineChannel passed to generator function/closure offering the possibility to yield values
 pub struct BoostedGeneratorChannel<'a, 'b: 'a, Yield: 'static, Return: 'static, Receive: 'a>(&'a mut CoroutineChannel<'b, Yield, Return, Receive>);
 
 /// Iterator over receiving generators containing a Closure as a source of input values
-pub struct BoostedGeneratorIterator<'a, Yield: 'static, Return: 'static, Receive: 'a, RF: Fn() -> Receive>(BoostedGenerator<'a, Yield, Return, Receive>, RF);
+pub struct BoostedGeneratorIterator<'a, Yield: 'static, Return: 'static, Receive: 'a, RF: FnMut() -> Receive>(BoostedGenerator<'a, Yield, Return, Receive>, RF);
 
 /// Holds the current execution state of the generator wrapping the invocation state of the Coroutine and buffering the extra return value
 enum BoostedGeneratorState<'a, Yield: 'static, Return: 'static, Receive: 'a> {
@@ -70,23 +84,24 @@ enum BoostedGeneratorState<'a, Yield: 'static, Return: 'static, Receive: 'a> {
     COMPLETED(Return),
 }
 
-impl<'a, Yield: 'static> MonoGenerator<'a, Yield> {
-    pub fn new_with_return<F>(gen_fn: F) -> Self where F: FnOnce(&mut MonoGeneratorChannel<Yield>) -> Yield + 'static {
-        Self::new(|mut chan| {
+impl<'a, Yield: 'static> BoringGenerator<'a, Yield> {
+    /// Creates a new BoringGenerator using [gen_fn] as generating function yielding its return value (there it must return data of type Yield)
+    pub fn new_with_return<F>(gen_fn: F) -> Self where F: FnOnce(&mut BoringGeneratorChannel<Yield>) -> Yield + 'static {
+        Self::new(|chan| {
             let ret_yield = gen_fn(chan);
             chan.yield_val(ret_yield);
         })
     }
-
-    pub fn new<F>(gen_fn: F) -> Self where F: FnOnce(&mut MonoGeneratorChannel<Yield>) + 'static {
+    /// Creates a new BoringGenerator using [gen_fn] as generating function ignoring its return value
+    pub fn new<F>(gen_fn: F) -> Self where F: FnOnce(&mut BoringGeneratorChannel<Yield>) + 'static {
         Self(Coroutine::new(|chan, _| {
-            let mut gen_chan = MonoGeneratorChannel(chan);
+            let mut gen_chan = BoringGeneratorChannel(chan);
             gen_fn(&mut gen_chan);
         }))
     }
 }
 
-impl<'a, Yield: 'static> Generator<'a> for MonoGenerator<'a, Yield> {
+impl<'a, Yield: 'static> Generator<'a> for BoringGenerator<'a, Yield> {
     type Yield = Yield;
     type Receive = ();
 
@@ -105,7 +120,7 @@ impl<'a, Yield: 'static> Generator<'a> for MonoGenerator<'a, Yield> {
 
 impl<'a, Yield:'static,G:Generator<'a,Yield=Yield,Receive=()>+Iterator<Item=Yield>> IgnorantGenerator<'a,Yield> for G {}
 
-impl<'a, Yield: 'static> Iterator for MonoGenerator<'a, Yield> {
+impl<'a, Yield: 'static> Iterator for BoringGenerator<'a, Yield> {
     type Item = Yield;
 
     fn next(&mut self) -> Option<Yield> {
@@ -115,7 +130,6 @@ impl<'a, Yield: 'static> Iterator for MonoGenerator<'a, Yield> {
 
 impl<'a, Y: 'static, Ret: 'static, Rec: 'a> BoostedGenerator<'a, Y, Ret, Rec> {
     /// Factory function creating a new generator with input capabilities
-    /// The factoring is eager: a Generator with allocated call stack and context will be returned
     pub fn new_receiving<F>(gen_fn: F) -> Self
         where F: FnOnce(&mut BoostedGeneratorChannel<Y, Ret, Rec>, Rec) -> Ret + 'static {
         Self(BoostedGeneratorState::RUNNING(Coroutine::new(|chan, i| {
@@ -123,8 +137,10 @@ impl<'a, Y: 'static, Ret: 'static, Rec: 'a> BoostedGenerator<'a, Y, Ret, Rec> {
             gen_fn(&mut gen_chan,i)
         })))
     }
-
-
+    /// Creates a iterator for a non-ignorant Generator using the passed [source] closure as source of receive values
+    pub fn create_iter<RF:FnMut()->Rec>(self, source:RF) -> BoostedGeneratorIterator<'a,Y,Ret,Rec,RF> {
+        BoostedGeneratorIterator(self,source)
+    }
 }
 
 impl<'a, Y: 'static, Ret: 'static, Rec: 'a> ResultingGenerator<'a> for BoostedGenerator<'a, Y, Ret, Rec> {
@@ -189,7 +205,7 @@ impl<'a, Y: 'static, Ret: 'static> Iterator for BoostedGenerator<'a, Y, Ret, ()>
     }
 }
 
-impl<'a, 'b: 'a, Y: 'static> GeneratorChannel<'a> for MonoGeneratorChannel<'a, 'b, Y> {
+impl<'a, 'b: 'a, Y: 'static> GeneratorChannel<'a> for BoringGeneratorChannel<'a, 'b, Y> {
     type Yield = Y;
     type Receive = ();
 

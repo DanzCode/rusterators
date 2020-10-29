@@ -16,6 +16,7 @@ impl StackFactory {
         Self::new(|| ProtectedFixedSizeStack::default())
     }
 
+    #[allow(dead_code)]
     pub fn of_size(stack_size:usize) -> Self {
         Self::new(move || ProtectedFixedSizeStack::new(stack_size).unwrap())
     }
@@ -55,6 +56,7 @@ impl<V> ValueExchangeContainer<V> {
     }
 
     /// Queries whether containers value is still available or has already been moved
+    #[allow(dead_code)]
     fn has_content(&self) -> bool {
         match self {
             Self::Value(_) => true,
@@ -207,12 +209,12 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use context::{Context, ContextFn, Transfer};
     use context::stack::ProtectedFixedSizeStack;
     use super::ValueExchangeContainer;
     use crate::transfer::{ExchangeContainerRef, ExchangingTransfer};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     #[test]
     fn exchange_container_prepare() {

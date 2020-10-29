@@ -1,12 +1,10 @@
 use std::any::Any;
-use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use context::{Transfer};
 use context::stack::{ProtectedFixedSizeStack};
 
 use crate::transfer::{ExchangingTransfer, StackFactory};
-use std::rc::Rc;
 
 /// Type alias for the data a panic is carrying
 type PanicData = Box<dyn Any + Send + 'static>;
@@ -85,9 +83,7 @@ pub enum CompleteVariant {
 /// Completed variant is used in case coroutine context has been dropped (either due to return or unwind) and controlling struct on invocation side still exists
 enum InvocationState<'a, Yield: 'static, Return: 'static, Receive: 'a> {
     Init(Option<Box<DynFn<'a, Yield, Return, Receive>>>),
-    Wait,
     Running(InvocationChannel<'a, Yield, Return, Receive>, ProtectedFixedSizeStack),
-    //Running(RunningState<'a,YU>),
     Completed(CompleteVariant),
 }
 
@@ -239,6 +235,7 @@ extern "C" fn run_co_context<Yield: 'static, Return: 'static, Receive>(raw_trans
 }
 
 /// a lot of really good tests
+#[cfg(test)]
 mod tests {
     use context::{Context, ContextFn, Transfer};
     use context::stack::ProtectedFixedSizeStack;

@@ -1,8 +1,8 @@
 extern crate rusterators;
-use rusterators::generators::{BoostedGenerator, MonoGenerator, GeneratorChannel};
+use rusterators::generators::{BoringGenerator, GeneratorChannel};
 
 fn main() {
-    for f in MonoGenerator::new(|g| {
+    for f in BoringGenerator::new(|g| {
         let mut current=(0,1);
         loop {
             g.yield_val(current.0);
