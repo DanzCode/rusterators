@@ -31,7 +31,7 @@ impl<T> DerefMut for SelfUpdating<T> {
         self.0.as_mut().unwrap()
     }
 }
-
+#[cfg(test)]
 mod tests {
     use crate::utils::SelfUpdating;
 

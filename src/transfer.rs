@@ -157,7 +157,7 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
         tmp
     }
 }
-
+#[cfg(test)]
 mod tests {
     use context::{Context, ContextFn, Transfer};
     use context::stack::ProtectedFixedSizeStack;
