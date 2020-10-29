@@ -106,10 +106,7 @@ impl<'a, V> ExchangeContainerRef<'a, V> {
     }
     /// Updates the holded reference to new pointer
     fn receive_ref(&mut self, p: usize) {
-        self.0 = match self.0 {
-            ValueExchangeContainer::Empty => ValueExchangeContainer::of_pointer(p),
-            _ => panic!("tried to forget nonm-empty container ref")
-        };
+        self.0 =  ValueExchangeContainer::of_pointer(p);
     }
 }
 
@@ -176,7 +173,7 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
     pub(super) fn dispose_with(&mut self, val: Send) -> ! {
         self.send(val);
         self.pointer_transfer.update(|t| unsafe { t.context.resume(0) });
-        panic!("resumed after dispose");
+        panic!("Resumed co-context after dispose")
     }
 
     /// Sends given value [val] to connected callcontext and resumes it's execution expecting that current callcontext is resumed later

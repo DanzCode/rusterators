@@ -6,6 +6,7 @@ use context::{Transfer};
 use context::stack::{ProtectedFixedSizeStack};
 
 use crate::transfer::{ExchangingTransfer, StackFactory};
+use std::rc::Rc;
 
 /// Type alias for the data a panic is carrying
 type PanicData = Box<dyn Any + Send + 'static>;
@@ -51,7 +52,7 @@ pub enum UnwindReason {
 /// CoroutineFactory holds the closure and offer a method needed to construct an invocable coroutine
 /// Creating a factory can enable the user to separate coroutine definition from invocation and postpones callstack/context creation as well as choosing invocation value until actual execution needs to happen
 /// Also it is quite a helpful method to get rid of closure template parameter(which otherwise gets quite annoying) before generator struct is formed
-pub struct CoroutineFactory<'a,Yield: 'static, Return: 'static, Receive>(Box<DynFn<'a,Yield, Return, Receive>>, PhantomData<(Yield, Return, Receive)>);
+//pub struct CoroutineFactory<'a, Yield: 'static, Return: 'static, Receive>(Box<DynFn<'a, Yield, Return, Receive>>, PhantomData<(Yield, Return, Receive)>);
 
 /// Represents the actual execution of a coroutine on invocation context side
 /// It encapsulates a state enum being either in Running state holding context/stack or in Completed state holding completion type
@@ -83,9 +84,13 @@ pub enum CompleteVariant {
 /// Running variant holds associated context structures and communication channel(meaning that all context including stack will be dropped as soon as state changes and such resources are freed as soon as possible)
 /// Completed variant is used in case coroutine context has been dropped (either due to return or unwind) and controlling struct on invocation side still exists
 enum InvocationState<'a, Yield: 'static, Return: 'static, Receive: 'a> {
+    Init(Option<Box<DynFn<'a, Yield, Return, Receive>>>),
+    Wait,
     Running(InvocationChannel<'a, Yield, Return, Receive>, ProtectedFixedSizeStack),
+    //Running(RunningState<'a,YU>),
     Completed(CompleteVariant),
 }
+
 
 /// Offers communication interface between contexts on coroutine context sides
 /// Also holds information whether a caught panic is "real" or caused intentionally for controlled stack unwinding(second field is true in later case)
@@ -99,21 +104,21 @@ pub struct CoroutineChannel<'a, Yield: 'static, Return: 'static, Receive: 'a>(Ex
 /// However this is decorated by coroutine and not accessible outside
 struct InvocationChannel<'a, Yield: 'static, Return: 'static, Receive: 'a>(ExchangingTransfer<'a, ResumeType<Receive>, SuspenseType<Yield, Return>>);
 
-impl<'a,Yield: 'static, Return: 'static, Receive> CoroutineFactory<'a,Yield, Return, Receive>
-//where
-//F:  {
-{
-    /// Constructs new factory out of coroutine closure
-    pub fn new(handler: impl FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return+'a) -> Self where Receive:'a {
-        Self(Box::new(handler), PhantomData)
-    }
-    /// Build actual Coroutine by allocation stack, initing context information and transferring closure
-    /// Inits Coroutine structure in initial Running state ready to be invoked
-    pub fn build<'b>(self) -> Coroutine<'b, Yield, Return, Receive> {
-        let (exchanging_transfer,stack) = ExchangingTransfer::<ResumeType<Receive>, SuspenseType<Yield, Return>>::init_context_sending(StackFactory::default_stack(), run_co_context::<Yield, Return, Receive>, self.0);
-        Coroutine(InvocationState::Running(InvocationChannel::<Yield, Return, Receive>(exchanging_transfer), stack))
-    }
-}
+// impl<'a, Yield: 'static, Return: 'static, Receive> CoroutineFactory<'a, Yield, Return, Receive>
+// //where
+// //F:  {
+// {
+//     /// Constructs new factory out of coroutine closure
+//     pub fn new(handler: impl FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return + 'a) -> Self where Receive: 'a {
+//         Self(Box::new(handler), PhantomData)
+//     }
+//     /// Build actual Coroutine by allocation stack, initing context information and transferring closure
+//     /// Inits Coroutine structure in initial Running state ready to be invoked
+//     pub fn build<'b>(self) -> Coroutine<'b, Yield, Return, Receive> {
+//         let (exchanging_transfer, stack) = ExchangingTransfer::<ResumeType<Receive>, SuspenseType<Yield, Return>>::init_context_sending(StackFactory::default_stack(), run_co_context::<Yield, Return, Receive>, self.0);
+//         Coroutine(InvocationState::Running(InvocationChannel::<Yield, Return, Receive>(exchanging_transfer), stack))
+//     }
+// }
 
 impl<'a, Yield: 'static, Return: 'static, Receive: 'a> Drop for Coroutine<'a, Yield, Return, Receive> {
     /// Causes coroutine context to unwind in case it is still running
@@ -128,17 +133,32 @@ impl<'a, Yield: 'static, Return: 'static, Receive: 'a> Drop for Coroutine<'a, Yi
 }
 
 impl<'a, Yield: 'static, Return: 'static, Receive: 'a> Coroutine<'a, Yield, Return, Receive> {
+    /// Constructs a new coroutine by given closure
+    pub fn new(handler: impl FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return + 'a) -> Self where Receive: 'a {
+        Self(InvocationState::Init(Some(Box::new(handler))))
+    }
     /// Sends a given value to the coroutine context and yields execution control to it
     /// Returns either a Yield or a Return ResumeResult after coroutine execution has been suspended
     /// Panics in case coroutine execution did panic or in case coroutine execution already has completed it
     pub fn resume(&mut self, send: Receive) -> ResumeResult<Yield, Return> {
-        let rec = match &mut self.0 {
-            InvocationState::Running(channel, _) => channel.suspend(send),
-            InvocationState::Completed(_) => panic!("tried to send to completed context")
+        let (rec, next_state) = match &mut self.0 {
+            InvocationState::Init(co_fn) => {
+                let (exchanging_transfer, stack) =
+                    ExchangingTransfer::<ResumeType<Receive>, SuspenseType<Yield, Return>>
+                    ::init_context_sending(StackFactory::default_stack(),
+                                           run_co_context::<Yield, Return, Receive>, co_fn.take().unwrap());
+                let mut channel = InvocationChannel::<Yield, Return, Receive>(exchanging_transfer);
+                let rec=channel.suspend(send);
+                (rec, Some(InvocationState::Running(channel, stack)))
+            }
+            InvocationState::Running(channel, _) => (channel.suspend(send), None),
+            _ => panic!("tried to send to non-running context")
         };
-
-        self.receive(rec)
+        let (res,other_next_state)=self.receive(rec);
+        if let Some(state)=other_next_state.or(next_state)  { self.0 = state; }
+        res
     }
+
     /// queries whether coroutine has completed execution
     pub fn is_completed(&self) -> bool {
         match self.0 {
@@ -147,25 +167,14 @@ impl<'a, Yield: 'static, Return: 'static, Receive: 'a> Coroutine<'a, Yield, Retu
         }
     }
     /// Internally handles value passed by coroutine execution
-    fn receive(&mut self, rec: SuspenseType<Yield, Return>) -> ResumeResult<Yield, Return> {
+    fn receive(&mut self, rec: SuspenseType<Yield, Return>) -> (ResumeResult<Yield, Return>, Option<InvocationState<'a, Yield, Return, Receive>>) {
         match rec {
-            SuspenseType::Yield(y) => ResumeResult::Yield(y),
-            SuspenseType::Complete(complete_type) => {
-                match complete_type {
-                    CompleteType::Return(r) => {
-                        self.0 = InvocationState::Completed(CompleteVariant::Return);
-                        ResumeResult::Return(r)
-                    }
-                    CompleteType::Unwind(u) => {
-                        self.0 = InvocationState::Completed(CompleteVariant::Unwind);
-                        if let UnwindReason::Panic(_) = u {
-                            // TODO maybe pass some data referencing/containing original ponic but also being formatted
-                            panic!("Coroutine panicked")
-                        } else {
-                            panic!("coroutine context dropped outside of coroutine destructor")
-                        }
-                    }
-                }
+            SuspenseType::Yield(y) => (ResumeResult::Yield(y), None),
+            SuspenseType::Complete(CompleteType::Return(r)) => (ResumeResult::Return(r), Some(InvocationState::Completed(CompleteVariant::Return))),
+            SuspenseType::Complete(CompleteType::Unwind(u)) => {
+                self.0 = InvocationState::Completed(CompleteVariant::Unwind);
+                // TODO maybe pass some data referencing/containing original ponic but also being formatted
+                panic!(if let UnwindReason::Panic(_) = u { "Coroutine panicked" } else { "coroutine context dropped outside of coroutine destructor" })
             }
         }
     }
@@ -207,7 +216,7 @@ impl<'a, Yield: 'static, Return: 'static, Receive: 'a> InvocationChannel<'a, Yie
     }
 }
 
-type DynFn<'a,Yield, Return, Receive> = dyn FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return+'a;
+type DynFn<'a, Yield, Return, Receive> = dyn FnOnce(&mut CoroutineChannel<Yield, Return, Receive>, Receive) -> Return + 'a;
 
 /// "Bootstrap" function for coroutine context
 /// This wraps baremetal Boost:context execution by receiving closure struct, initing communication channel and wrapping closure execution in order to have a clean stack unwind in any case
@@ -215,12 +224,11 @@ extern "C" fn run_co_context<Yield: 'static, Return: 'static, Receive>(raw_trans
     let (mut exchange_transfer, routine_fn) =
         ExchangingTransfer::<SuspenseType<Yield, Return>, ResumeType<Receive>>::
         create_receiving::<Box<DynFn<Yield, Return, Receive>>>(raw_transfer);
-
     let initial = exchange_transfer.suspend();
     let mut channel = CoroutineChannel(exchange_transfer, false);
 
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let initial = channel.receive(initial);
+       let initial = channel.receive(initial);
         routine_fn(&mut channel, initial)
     }));
 

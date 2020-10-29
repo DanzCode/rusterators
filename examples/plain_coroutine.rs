@@ -1,6 +1,6 @@
-use rusterators::coroutines::{Coroutine, CoroutineFactory};
+use rusterators::coroutines::{Coroutine};
 fn main() {
-    let coroutine= CoroutineFactory::new(|mut chan, mut i:i32| {
+    let mut coroutine= Coroutine::new(|mut chan, mut i:i32| {
         let mut counter=0;
         while i!=10 {
             counter+=1;
@@ -8,8 +8,8 @@ fn main() {
         }
         counter
     });
-    let mut  co=coroutine.build();
+
     for i in 5..11 {
-        println!("{:?}",co.resume(i));
+        println!("{:?}",coroutine.resume(i));
     }
 }
