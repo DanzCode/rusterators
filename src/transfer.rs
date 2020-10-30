@@ -16,6 +16,7 @@ impl StackFactory {
         Self::new(|| ProtectedFixedSizeStack::default())
     }
 
+    #[allow(dead_code)]
     pub fn of_size(stack_size:usize) -> Self {
         Self::new(move || ProtectedFixedSizeStack::new(stack_size).unwrap())
     }
@@ -55,6 +56,7 @@ impl<V> ValueExchangeContainer<V> {
     }
 
     /// Queries whether containers value is still available or has already been moved
+    #[allow(dead_code)]
     fn has_content(&self) -> bool {
         match self {
             Self::Value(_) => true,
@@ -106,10 +108,7 @@ impl<'a, V> ExchangeContainerRef<'a, V> {
     }
     /// Updates the holded reference to new pointer
     fn receive_ref(&mut self, p: usize) {
-        self.0 = match self.0 {
-            ValueExchangeContainer::Empty => ValueExchangeContainer::of_pointer(p),
-            _ => panic!("tried to forget nonm-empty container ref")
-        };
+        self.0 =  ValueExchangeContainer::of_pointer(p);
     }
 }
 
@@ -176,7 +175,7 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
     pub(super) fn dispose_with(&mut self, val: Send) -> ! {
         self.send(val);
         self.pointer_transfer.update(|t| unsafe { t.context.resume(0) });
-        panic!("resumed after dispose");
+        panic!("Resumed co-context after dispose")
     }
 
     /// Sends given value [val] to connected callcontext and resumes it's execution expecting that current callcontext is resumed later
@@ -216,7 +215,6 @@ mod tests {
     use context::stack::ProtectedFixedSizeStack;
     use super::ValueExchangeContainer;
     use crate::transfer::{ExchangeContainerRef, ExchangingTransfer};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     #[test]
     fn exchange_container_prepare() {

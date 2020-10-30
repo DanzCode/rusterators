@@ -36,6 +36,7 @@ impl<T> SelfUpdating<T> {
         self.0 = Some(op(self.0.take().unwrap()))
     }
 
+    #[allow(dead_code)]
     pub fn unwrap(mut self) -> T {self.0.take().unwrap()}
 }
 
