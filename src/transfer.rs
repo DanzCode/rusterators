@@ -209,6 +209,7 @@ impl<'a, Send, Receive> ExchangingTransfer<'a, Send, Receive> {
         self.receive_container.receive_content()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use context::{Context, ContextFn, Transfer};
